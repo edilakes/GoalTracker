@@ -4,13 +4,9 @@ import { getAuth, signInAnonymously, signInWithCustomToken, onAuthStateChanged }
 import { getFirestore, doc, setDoc, getDoc } from 'firebase/firestore'; 
 
 // --- CONFIGURACIÓN Y CONSTANTES ---
-// Asegúrate de que estas variables globales estén definidas en el entorno Canvas
 const firebaseConfig = typeof __firebase_config !== 'undefined' ? JSON.parse(__firebase_config) : {};
 const appId = typeof __app_id !== 'undefined' ? __app_id : 'default-app-id';
 const initialAuthToken = typeof __initial_auth_token !== 'undefined' ? __initial_auth_token : null; 
-
-// FECHA DE INICIO DE LA CONTABILIDAD (6 de octubre de este año)
-// Puedes cambiar esta fecha para modificar el inicio de tu racha
 const START_DATE_STRING = '2025-10-06'; 
 
 // --- UTILITIES PARA FECHAS Y FORMATO ---
@@ -124,21 +120,21 @@ const isValidDateString = (dateString) => {
 };
 
 
-// --- COMPONENTE DE CONFIGURACIÓN DESPLEGABLE ---
+// --- SUB-COMPONENTES DE UI ---
 
+/**
+ * Componente del Menú Desplegable de Configuración
+ */
 const SettingsDropdown = ({ exportToJson, importFromJson, closeDropdown }) => {
     const fileInputRef = useRef(null);
     
-    // CORRECCIÓN 1: handleImportClick ahora solo simula el clic
     const handleImportClick = () => {
         fileInputRef.current?.click();
-        // NOTA: El cierre del dropdown se deja al final para que la interacción se sienta más fluida
     };
     
-    // CORRECCIÓN 2: handleFileSelect maneja el evento de cambio del input y llama a importFromJson
     const handleFileSelect = (event) => {
         importFromJson(event);
-        closeDropdown(); // Cierra el dropdown después de que la importación (asíncrona) ha comenzado
+        closeDropdown();
     };
 
     return (
@@ -146,36 +142,30 @@ const SettingsDropdown = ({ exportToJson, importFromJson, closeDropdown }) => {
             <div className="py-1">
                 <span className="block px-4 py-2 text-xs text-gray-400 font-semibold uppercase">Gestión de Datos</span>
                 
-                {/* Opción Exportar a JSON */}
                 <button
                     onClick={() => { exportToJson(); closeDropdown(); }}
                     className="flex items-center w-full px-4 py-2 text-sm text-gray-700 hover:bg-gray-100"
                 >
-                    {/* Icono de llave (JSON) */}
                     <svg className="w-4 h-4 mr-2 text-green-500" fill="none" stroke="currentColor" viewBox="0 0 24 24" xmlns="http://www.w3.org/2000/svg"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M15 11l-3 3-3-3m4 8v-6a4 4 0 00-8 0v6m12 0h2a2 2 0 002-2v-3a2 2 0 00-2-2H9"></path></svg>
                     Exportar a JSON
                 </button>
 
-                {/* Opción Importar JSON */}
                 <button
                     onClick={handleImportClick}
                     className="flex items-center w-full px-4 py-2 text-sm text-gray-700 hover:bg-gray-100"
                 >
-                    {/* Icono de carpeta (JSON) */}
                     <svg className="w-4 h-4 mr-2 text-blue-500" fill="none" stroke="currentColor" viewBox="0 0 24 24" xmlns="http://www.w3.org/2000/svg"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M3 7v10a2 2 0 002 2h14a2 2 0 002-2V9a2 2 0 00-2-2h-6l-2-2H5a2 2 0 00-2 2z"></path></svg>
                     Importar JSON
                 </button>
                 
-                {/* Input de archivo Oculto (aceptando .json) */}
                 <input
                     type="file"
                     ref={fileInputRef}
                     accept=".json" 
-                    onChange={handleFileSelect} // CORRECCIÓN 3: Llamar a la función que gestiona el evento
+                    onChange={handleFileSelect} 
                     className="hidden"
                 />
 
-                {/* Espacio para futuras opciones */}
                 <div className="border-t border-gray-100 my-1"></div>
                 <span className="block px-4 py-2 text-xs text-gray-400 font-semibold uppercase">Futuras Opciones</span>
                 <div className="block px-4 py-2 text-sm text-gray-500">
@@ -186,6 +176,102 @@ const SettingsDropdown = ({ exportToJson, importFromJson, closeDropdown }) => {
     );
 };
 
+/**
+ * Componente para mostrar la Puntuación y Racha
+ */
+const ScoreCard = ({ formattedMoney, currentStreak, isDataLoaded }) => (
+    <div className="flex justify-around items-center space-x-4 mb-6">
+        <div className="flex flex-col items-center p-3 bg-indigo-50 rounded-lg w-1/2 shadow-sm">
+            <span className="text-xs font-medium text-gray-500">DINERO ACUMULADO</span>
+            <span className="text-4xl font-extrabold text-indigo-600 mt-1">{isDataLoaded ? formattedMoney : '...'}</span>
+        </div>
+        <div className="flex flex-col items-center p-3 bg-green-50 rounded-lg w-1/2 shadow-sm">
+            <span className="text-xs font-medium text-gray-500">RACHA ACTUAL</span>
+            <span className="text-4xl font-extrabold text-green-600 mt-1">{isDataLoaded ? currentStreak : '...'}</span>
+        </div>
+    </div>
+);
+
+/**
+ * Componente para la cabecera del calendario (Navegación)
+ */
+const CalendarHeader = ({ monthName, goToPrevMonth, goToNextMonth, isCalendarDisabled }) => (
+    <div className="flex justify-between items-center mb-4">
+        <button 
+            onClick={goToPrevMonth}
+            className={`p-2 rounded-full text-indigo-600 nav-button ${isCalendarDisabled ? 'opacity-50' : 'hover:bg-indigo-100'}`}
+            disabled={isCalendarDisabled}
+        >
+            <svg className="w-6 h-6" fill="none" stroke="currentColor" viewBox="0 0 24 24" xmlns="http://www.w3.org/2000/svg"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M15 19l-7-7 7-7"></path></svg>
+        </button>
+        <h2 className="text-xl font-semibold text-gray-800 capitalize text-center">{monthName}</h2>
+        <button 
+            onClick={goToNextMonth}
+            className={`p-2 rounded-full text-indigo-600 nav-button ${isCalendarDisabled ? 'opacity-50' : 'hover:bg-indigo-100'}`}
+            disabled={isCalendarDisabled}
+        >
+            <svg className="w-6 h-6" fill="none" stroke="currentColor" viewBox="0 0 24 24" xmlns="http://www.w3.org/2000/svg"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M9 5l7 7-7 7"></path></svg>
+        </button>
+    </div>
+);
+
+/**
+ * Componente memorizado para un solo día del calendario.
+ * Solo se vuelve a renderizar si sus props (dayInfo) cambian.
+ */
+const DayCell = React.memo(({ dayInfo, onDayClick, isDataLoaded }) => {
+    const { date, dateString, isFailed, isToday, isFuture, isBeforeStart } = dayInfo;
+
+    let contentClass = "";
+    let circleClass = "bg-gray-100 text-gray-600";
+    let statusText = "";
+    let isClickable = true;
+
+    if (isFuture) {
+        contentClass = "bg-gray-50 text-gray-400 cursor-default";
+        circleClass = "bg-transparent text-gray-300 border border-gray-200";
+        isClickable = false;
+    } else if (isBeforeStart) {
+        contentClass = "bg-gray-200 text-gray-400 cursor-default opacity-50";
+        circleClass = "bg-gray-300 text-gray-500";
+        isClickable = false;
+        statusText = "Inicio";
+    } else if (isFailed) {
+        contentClass = "bg-red-100 hover:bg-red-200 text-red-800 ring-2 ring-red-400";
+        circleClass = "bg-red-500 text-white font-bold";
+        statusText = "Derrota!";
+    } else {
+        contentClass = "neutral-state text-gray-800";
+        circleClass = "bg-gray-100 text-gray-600 font-medium";
+        statusText = "";
+    }
+    
+    if (isToday && !isFuture && !isBeforeStart) {
+        contentClass += " border-2 border-indigo-500 shadow-md";
+    }
+
+    // Deshabilita la interacción si los datos no han cargado.
+    const finalClickable = isClickable && isDataLoaded;
+    contentClass = finalClickable ? contentClass : `${contentClass} opacity-60 cursor-not-allowed`;
+
+    return (
+        <div className="day-cell p-1">
+            <div
+                className={`day-content ${contentClass} ${finalClickable ? 'active:scale-95' : ''}`}
+                onClick={() => finalClickable && onDayClick(dateString)}
+                role="button"
+                aria-label={`Marcar día ${date.getDate()}`}
+            >
+                <div className={`w-6 h-6 rounded-full text-center text-sm ${circleClass} flex items-center justify-center mb-1`}>
+                    {date.getDate()}
+                </div>
+                <span className="text-xs font-semibold">{statusText}</span>
+                {isToday && <span className="text-xs font-bold text-indigo-700 absolute bottom-1">HOY</span>}
+            </div>
+        </div>
+    );
+});
+
 
 // --- COMPONENTE PRINCIPAL ---
 
@@ -194,14 +280,14 @@ const App = () => {
     const [userId, setUserId] = useState(null);
     const [failedDays, setFailedDays] = useState({});
     
-    // NUEVOS ESTADOS DE CARGA PARA DESACOPLAMIENTO
-    const [isInitializing, setIsInitializing] = useState(true); // Inicializando Firebase/Auth
-    const [isDataLoaded, setIsDataLoaded] = useState(false); // Datos cargados de Firestore
+    // Estados de Carga
+    const [isInitializing, setIsInitializing] = useState(true);
+    const [isDataLoaded, setIsDataLoaded] = useState(false);
     
     const [message, setMessage] = useState('');
     const [showSettings, setShowSettings] = useState(false); 
     
-    // ESTADOS PARA LA ESTRATEGIA "LOCAL-FIRST"
+    // Estados "Local-First"
     const [isSaving, setIsSaving] = useState(false);
     const [needsSave, setNeedsSave] = useState(false);
 
@@ -210,13 +296,16 @@ const App = () => {
         d.setHours(0, 0, 0, 0);
         return d;
     }, []);
+    
+    const todayKey = useMemo(() => formatDate(today), [today]);
+    const startDate = useMemo(() => new Date(START_DATE_STRING), []);
 
     const [currentViewDate, setCurrentViewDate] = useState(today);
 
-    // Score
+    // Score (Memoizado)
     const { score, currentStreak } = useMemo(() => calculateScoreAndStreak(failedDays), [failedDays]);
     
-    // Formatear el score a Euros
+    // Dinero (Memoizado)
     const formattedMoney = useMemo(() => {
         const euros = score / 100;
         return new Intl.NumberFormat('es-ES', { 
@@ -230,14 +319,39 @@ const App = () => {
 
     const daysInMonth = useMemo(() => getDaysInMonth(currentViewDate), [currentViewDate]);
     const weekdayNames = useMemo(() => getWeekdayNames('es-ES'), []);
-    const monthName = new Intl.DateTimeFormat('es-ES', { month: 'long', year: 'numeric' }).format(currentViewDate);
+    const monthName = useMemo(() => new Intl.DateTimeFormat('es-ES', { month: 'long', year: 'numeric' }).format(currentViewDate), [currentViewDate]);
 
+    // Pre-calcula los datos del calendario para optimizar el renderizado
+    const calendarDays = useMemo(() => {
+        const firstDayOfMonth = daysInMonth[0];
+        const startOffset = (firstDayOfMonth.getDay() + 6) % 7; // Lunes=0, Domingo=6
+
+        const offsetArray = Array(startOffset).fill(null).map((_, index) => ({
+            isOffset: true,
+            id: `offset-${index}`
+        }));
+
+        const daysArray = daysInMonth.map((date) => {
+            const dateString = formatDate(date);
+            return {
+                isOffset: false,
+                id: dateString,
+                date,
+                dateString,
+                isFailed: !!failedDays[dateString],
+                isToday: dateString === todayKey,
+                isFuture: date > today,
+                isBeforeStart: date < startDate
+            };
+        });
+
+        return [...offsetArray, ...daysArray];
+    }, [daysInMonth, failedDays, today, todayKey, startDate]);
 
     // ------------------------------------------------------------------
     // 1. FUNCIONES DE CARGA Y AUTENTICACIÓN
     // ------------------------------------------------------------------
 
-    // Inicialización de Firebase (rápido)
     useEffect(() => {
         if (!firebaseConfig || !Object.keys(firebaseConfig).length) {
             setMessage("Error: Configuración de Firebase no disponible.");
@@ -252,12 +366,10 @@ const App = () => {
             
             setDb(firestore);
 
-            // 1. Manejar la autenticación
             const handleAuthAndLoad = async (user) => {
                 let currentUserId = user ? user.uid : null;
 
                 if (!currentUserId) {
-                    // Intenta sign in
                     try {
                         if (initialAuthToken) { 
                             const userCredential = await signInWithCustomToken(authInstance, initialAuthToken);
@@ -277,14 +389,12 @@ const App = () => {
                 setUserId(currentUserId);
                 setIsInitializing(false); // Fin de la inicialización y muestra la UI
                 
-                // 2. Cargar datos ASÍNCRONAMENTE
                 if (firestore && currentUserId) {
                     await loadGoalData(firestore, currentUserId);
                 }
             };
             
             const unsubscribe = onAuthStateChanged(authInstance, handleAuthAndLoad);
-
             return () => unsubscribe();
         } catch (e) {
             console.error("Error al inicializar Firebase:", e);
@@ -294,32 +404,26 @@ const App = () => {
     // eslint-disable-next-line react-hooks/exhaustive-deps
     }, []); 
 
-    // Función de carga de datos dedicada
     const loadGoalData = useCallback(async (firestore, currentUserId) => {
         setMessage("Conectando y cargando datos...");
         const userDaysDocRef = doc(firestore, `artifacts/${appId}/users/${currentUserId}/goal_data`, 'day_records');
         try {
             const docSnap = await getDoc(userDaysDocRef);
-            if (docSnap.exists()) {
-                setFailedDays(docSnap.data().failedDays || {});
-            } else {
-                setFailedDays({});
-            }
-            setIsDataLoaded(true); // Datos cargados correctamente
+            setFailedDays(docSnap.exists() ? (docSnap.data().failedDays || {}) : {});
+            setIsDataLoaded(true);
             setMessage("Datos cargados correctamente.");
         } catch (err) {
             console.error("Error al cargar datos:", err);
-            setMessage(`Error al cargar: ${err.message}. La aplicación está visible pero los datos podrían no ser los más recientes.`);
-            setIsDataLoaded(true); // Forzar a true para no bloquear el calendario
+            setMessage(`Error al cargar: ${err.message}.`);
+            setIsDataLoaded(true); // Forzar a true para no bloquear
         }
-    }, []);
+    }, [appId]);
 
 
     // ------------------------------------------------------------------
     // 2. FUNCIONES DE NAVEGACIÓN Y EDICIÓN LOCAL
     // ------------------------------------------------------------------
 
-    // Navegación de mes
     const goToPrevMonth = useCallback(() => {
         setCurrentViewDate(prevDate => {
             const newDate = new Date(prevDate);
@@ -336,129 +440,91 @@ const App = () => {
         });
     }, []);
 
-    // Función de "TOGGLE" 100% LOCAL Y SÍNCRONA
     const toggleDayStatus = useCallback((dateString) => {
-        const date = new Date(dateString);
-        if (date > today) {
-            setMessage("No puedes marcar días futuros.");
-            return;
-        }
-        
+        // No es necesario comprobar 'isFuture' aquí, DayCell ya lo previene.
         setFailedDays(currentFailedDays => {
             const newFailedDays = { ...currentFailedDays };
-            const isCurrentlyFailed = !!newFailedDays[dateString];
-
-            if (isCurrentlyFailed) {
+            if (!!newFailedDays[dateString]) {
                 delete newFailedDays[dateString];
             } else {
                 newFailedDays[dateString] = true;
             }
             return newFailedDays;
         });
-        
         setNeedsSave(true);
-    }, [today]); 
+    }, []); 
 
     // ------------------------------------------------------------------
     // 3. FUNCIONES DE GUARDADO
     // ------------------------------------------------------------------
 
     const handleSave = useCallback(async () => {
-        if (!db || !userId) {
-            setMessage("Error: No se puede guardar, la base de datos no está lista o no hay usuario autenticado.");
-            return;
-        }
-        if (!isDataLoaded) {
-            setMessage("Advertencia: Esperando la confirmación de la carga de datos. Inténtalo en un momento.");
+        if (!db || !userId || !isDataLoaded) {
+            setMessage("Error: No se puede guardar. La base de datos no está lista.");
             return;
         }
 
         setIsSaving(true);
         setMessage("Guardando cambios principales...");
-
         const userDaysDocRef = doc(db, `artifacts/${appId}/users/${userId}/goal_data`, 'day_records');
 
         try {
             await setDoc(userDaysDocRef, { failedDays: failedDays }, { merge: true });
-            
             setIsSaving(false);
             setNeedsSave(false);
             setMessage("¡Cambios guardados en la nube!");
-            
         } catch (error) {
             console.error("Error al guardar en Firestore:", error);
             setMessage(`Error al guardar: ${error.message}. Inténtalo de nuevo.`);
             setIsSaving(false);
         }
-    }, [db, userId, failedDays, isDataLoaded]);
+    }, [db, userId, failedDays, isDataLoaded, appId]);
 
 
     // ------------------------------------------------------------------
     // 4. FUNCIONES DE IMPORTACIÓN/EXPORTACIÓN JSON
     // ------------------------------------------------------------------
 
-    /**
-     * Exporta los días fallidos actuales a un archivo JSON.
-     * El formato exportado es un Array de strings: ["YYYY-MM-DD", "YYYY-MM-DD", ...]
-     */
     const exportToJson = useCallback(() => {
-        // 1. Obtener las fechas fallidas y convertirlas a un Array
         const failedDatesArray = Object.keys(failedDays).sort();
-
-        // 2. Crear el contenido JSON (string)
-        const jsonContent = JSON.stringify(failedDatesArray, null, 2); // null, 2 para indentación legible
-
-        // 3. Crear el Blob y descargar
+        const jsonContent = JSON.stringify(failedDatesArray, null, 2);
         const blob = new Blob([jsonContent], { type: 'application/json;charset=utf-8;' });
         const url = URL.createObjectURL(blob);
-        
         const a = document.createElement('a');
         a.href = url;
         a.download = `GoalTracker_FailedDays_${formatDate(new Date())}.json`; 
         document.body.appendChild(a);
         a.click();
         document.body.removeChild(a);
-        
         URL.revokeObjectURL(url);
         setMessage("¡Días fallidos exportados a JSON!");
     }, [failedDays]);
     
 
-    /**
-     * Importa días fallidos desde un archivo JSON.
-     * Espera un Array de strings de fechas: ["YYYY-MM-DD", "YYYY-MM-DD", ...]
-     */
     const importFromJson = useCallback((event) => {
         const file = event.target.files[0];
         if (!file) return;
 
         setMessage("Importando archivo JSON...");
-
         const reader = new FileReader();
+        
         reader.onload = (e) => {
             const content = e.target.result;
-            
             try {
-                // 1. Parsear el contenido JSON
                 const importedArray = JSON.parse(content);
-
                 if (!Array.isArray(importedArray)) {
                     setMessage("Error: El archivo JSON debe contener un Array de fechas.");
                     event.target.value = null;
                     return;
                 }
 
-                // 2. Procesar y validar las fechas importadas
                 const importedFailedDays = {};
                 let invalidCount = 0;
                 let futureCount = 0;
-                const todayKey = formatDate(today);
                 let totalDatesProcessed = 0;
                 
                 importedArray.forEach(item => {
                     totalDatesProcessed++;
-                    
-                    // Asegurarse de que el elemento es una cadena (y limpiar por si acaso)
                     const dateString = String(item).trim();
 
                     if (isValidDateString(dateString)) {
@@ -472,47 +538,33 @@ const App = () => {
                     }
                 });
 
-                // 3. Reemplazar el estado local con los datos importados
                 setFailedDays(importedFailedDays);
                 setNeedsSave(true);
                 
                 let resultMessage = `Importación completada. Se cargaron ${Object.keys(importedFailedDays).length} días fallidos.`;
-                
                 const ignoredDates = invalidCount + futureCount;
-
                 if (ignoredDates > 0) {
-                    resultMessage += ` (${ignoredDates} fechas ignoradas.`;
-                    if (invalidCount > 0) resultMessage += ` ${invalidCount} por formato no válido.`;
-                    if (futureCount > 0) resultMessage += ` ${futureCount} por fechas futuras.`;
-                    resultMessage += `)`;
+                    resultMessage += ` (${ignoredDates} fechas ignoradas: ${invalidCount} formato, ${futureCount} futuras.)`;
                 } else {
                      resultMessage += ` (Se procesaron ${totalDatesProcessed} fechas.)`;
                 }
-                
-                setMessage(resultMessage + " ¡Recuerda Guardar Cambios para sincronizar con la nube!");
-
+                setMessage(resultMessage + " ¡Recuerda Guardar Cambios!");
             } catch (error) {
                 setMessage(`Error al procesar el archivo JSON: ${error.message}`);
                 console.error("Error al parsear JSON:", error);
             }
-
-            // Limpiar el valor del input file para permitir la recarga del mismo archivo
             event.target.value = null; 
-        }
-
+        };
         reader.onerror = () => {
             setMessage("Error al leer el archivo.");
             event.target.value = null; 
         };
-
-        // Cambiado a readAsText, que es estándar para JSON
         reader.readAsText(file); 
-    }, [today]);
+    }, [todayKey]);
 
 
     // --- RENDERIZADO ---
 
-    // Mostrar pantalla de carga solo durante la inicialización de Firebase/Auth (debe ser muy breve)
     if (isInitializing) {
         return (
             <div className="flex justify-center items-center h-screen bg-gray-50">
@@ -521,11 +573,6 @@ const App = () => {
         );
     }
     
-    // Calcular el desplazamiento inicial para que el calendario comience en Lunes
-    const firstDayOfMonth = daysInMonth[0];
-    const startOffset = (firstDayOfMonth.getDay() + 6) % 7; // Lunes=0, Domingo=6
-    
-    // Controlar si el calendario debe estar deshabilitado
     const isCalendarDisabled = !isDataLoaded;
 
     return (
@@ -611,16 +658,12 @@ const App = () => {
                 <h1 className="text-3xl font-extrabold text-indigo-700 mb-2 text-center">Rastrador de Metas</h1>
                 <p className="text-sm text-gray-500 text-center mb-4">ID de Usuario: <span className="font-mono text-xs">{userId || 'Sin autenticar'}</span></p>
 
-                <div className="flex justify-around items-center space-x-4 mb-6">
-                    <div className="flex flex-col items-center p-3 bg-indigo-50 rounded-lg w-1/2 shadow-sm">
-                        <span className="text-xs font-medium text-gray-500">DINERO ACUMULADO</span>
-                        <span className="text-4xl font-extrabold text-indigo-600 mt-1">{isDataLoaded ? formattedMoney : '...'}</span>
-                    </div>
-                    <div className="flex flex-col items-center p-3 bg-green-50 rounded-lg w-1/2 shadow-sm">
-                        <span className="text-xs font-medium text-gray-500">RACHA ACTUAL</span>
-                        <span className="text-4xl font-extrabold text-green-600 mt-1">{isDataLoaded ? currentStreak : '...'}</span>
-                    </div>
-                </div>
+                {/* Componente de Puntuación */}
+                <ScoreCard 
+                    formattedMoney={formattedMoney}
+                    currentStreak={currentStreak}
+                    isDataLoaded={isDataLoaded}
+                />
                 
                 {/* BOTÓN DE GUARDAR PRINCIPAL */}
                 <div>
@@ -642,32 +685,21 @@ const App = () => {
                         )}
                     </button>
                     {needsSave && !isSaving && isDataLoaded && (
-                        <p className="text-center text-sm text-yellow-600 font-medium mt-2">¡Tienes cambios sin guardar! (Necesitas guardar para sincronizar la nube)</p>
+                        <p className="text-center text-sm text-yellow-600 font-medium mt-2">¡Tienes cambios sin guardar!</p>
                     )}
                 </div>
             </div>
             
             {/* Calendario */}
             <div className={`w-full max-w-md bg-white p-4 mb-4 rounded-xl shadow-lg transition-opacity duration-300 ${isCalendarDisabled ? 'opacity-50 pointer-events-none' : 'opacity-100'}`}>
-                <div className="flex justify-between items-center mb-4">
-                    <button 
-                        onClick={goToPrevMonth}
-                        className={`p-2 rounded-full text-indigo-600 nav-button ${isCalendarDisabled ? 'opacity-50' : 'hover:bg-indigo-100'}`}
-                        disabled={isCalendarDisabled}
-                    >
-                        <svg className="w-6 h-6" fill="none" stroke="currentColor" viewBox="0 0 24 24" xmlns="http://www.w3.org/2000/svg"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M15 19l-7-7 7-7"></path></svg>
-                    </button>
-
-                    <h2 className="text-xl font-semibold text-gray-800 capitalize text-center">{monthName}</h2>
-                    
-                    <button 
-                        onClick={goToNextMonth}
-                        className={`p-2 rounded-full text-indigo-600 nav-button ${isCalendarDisabled ? 'opacity-50' : 'hover:bg-indigo-100'}`}
-                        disabled={isCalendarDisabled}
-                    >
-                        <svg className="w-6 h-6" fill="none" stroke="currentColor" viewBox="0 0 24 24" xmlns="http://www.w3.org/2000/svg"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M9 5l7 7-7 7"></path></svg>
-                    </button>
-                </div>
+                
+                {/* Componente de Cabecera de Calendario */}
+                <CalendarHeader 
+                    monthName={monthName}
+                    goToPrevMonth={goToPrevMonth}
+                    goToNextMonth={goToNextMonth}
+                    isCalendarDisabled={isCalendarDisabled}
+                />
 
                 {/* Encabezado de la semana */}
                 <div className="grid grid-cols-7 text-center text-sm font-bold text-gray-600 mb-2">
@@ -676,71 +708,23 @@ const App = () => {
                     ))}
                 </div>
 
-                {/* Días del mes */}
+                {/* Días del mes (Ahora usa DayCell) */}
                 <div className="flex flex-wrap">
-                    {/* Espacio vacío para el desplazamiento inicial */}
-                    {Array(startOffset).fill(0).map((_, index) => (
-                        <div key={`offset-${index}`} className="day-cell"></div>
+                    {calendarDays.map((dayInfo) => (
+                        dayInfo.isOffset ? (
+                            <div key={dayInfo.id} className="day-cell"></div>
+                        ) : (
+                            <DayCell
+                                key={dayInfo.id}
+                                dayInfo={dayInfo}
+                                onDayClick={toggleDayStatus}
+                                isDataLoaded={isDataLoaded}
+                            />
+                        )
                     ))}
-
-                    {/* Renderizado de los días */}
-                    {daysInMonth.map((date) => {
-                        const dateString = formatDate(date);
-                        const isFailed = !!failedDays[dateString];
-                        const isToday = dateString === formatDate(today);
-                        const isFuture = date > today;
-                        const isBeforeStart = date < new Date(START_DATE_STRING);
-
-                        let contentClass = "";
-                        let circleClass = "bg-gray-100 text-gray-600";
-                        let statusText = "";
-                        let isClickable = true;
-
-                        if (isFuture) {
-                            contentClass = "bg-gray-50 text-gray-400 cursor-default";
-                            circleClass = "bg-transparent text-gray-300 border border-gray-200";
-                            isClickable = false;
-                        } else if (isBeforeStart) {
-                            contentClass = "bg-gray-200 text-gray-400 cursor-default opacity-50";
-                            circleClass = "bg-gray-300 text-gray-500";
-                            isClickable = false;
-                            statusText = "Inicio";
-                        } else if (isFailed) {
-                            contentClass = "bg-red-100 hover:bg-red-200 text-red-800 ring-2 ring-red-400";
-                            circleClass = "bg-red-500 text-white font-bold";
-                            statusText = "Derrota!";
-                        } else {
-                            contentClass = "neutral-state text-gray-800";
-                            circleClass = "bg-gray-100 text-gray-600 font-medium";
-                            statusText = "";
-                        }
-                        
-                        if (isToday && !isFuture && !isBeforeStart) {
-                            contentClass += " border-2 border-indigo-500 shadow-md";
-                        }
-
-                        // Deshabilita la interacción si los datos no han cargado.
-                        const finalClickable = isClickable && isDataLoaded;
-                        contentClass = finalClickable ? contentClass : `${contentClass} opacity-60 cursor-not-allowed`;
-
-                        return (
-                            <div key={dateString} className="day-cell p-1">
-                                <div
-                                    className={`day-content ${contentClass} ${finalClickable ? 'active:scale-95' : ''}`}
-                                    onClick={() => finalClickable && toggleDayStatus(dateString)}
-                                    role="button"
-                                    aria-label={`Marcar día ${date.getDate()}`}
-                                >
-                                    <div className={`w-6 h-6 rounded-full text-center text-sm ${circleClass} flex items-center justify-center mb-1`}>
-                                        {date.getDate()}
-                                    </div>
-                                    <span className="text-xs font-semibold">{statusText}</span>
-                                    {isToday && <span className="text-xs font-bold text-indigo-700 absolute bottom-1">HOY</span>}
-                                </div>
-                            </div>
-                        );
-                    })}
                 </div>
+                
+                {/* Overlay de Carga */}
                 {!isDataLoaded && (
                     <div className="absolute inset-0 bg-white bg-opacity-70 flex items-center justify-center z-10 rounded-xl">
                         <div className="flex flex-col items-center">
