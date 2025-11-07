@@ -7,7 +7,7 @@ import { getFirestore, doc, setDoc, getDoc } from 'firebase/firestore';
 const firebaseConfig = typeof __firebase_config !== 'undefined' ? JSON.parse(__firebase_config) : {};
 const appId = typeof __app_id !== 'undefined' ? __app_id : 'default-app-id';
 const initialAuthToken = typeof __initial_auth_token !== 'undefined' ? __initial_auth_token : null; 
-const START_DATE_STRING = '2025-10-06'; 
+// START_DATE_STRING ha sido movido a un estado dinámico.
 
 // --- UTILITIES PARA FECHAS Y FORMATO ---
 
@@ -52,8 +52,9 @@ const getWeekdayNames = (locale = 'es-ES') => {
 
 /**
  * Función central de cálculo de Puntuación y Racha (Lógica de racha creciente).
+ * AHORA RECIBE startDateString como argumento.
  */
-const calculateScoreAndStreak = (failedDays) => {
+const calculateScoreAndStreak = (failedDays, startDateString) => {
     let totalScore = 0; // Se mantiene en céntimos (puntos) para el cálculo
     let consecutiveDays = 0; // Racha de días logrados
     let currentStreak = 0;
@@ -61,7 +62,8 @@ const calculateScoreAndStreak = (failedDays) => {
     const today = new Date();
     today.setHours(0, 0, 0, 0);
 
-    const startDate = new Date(START_DATE_STRING);
+    // Usa la fecha de inicio dinámica
+    const startDate = new Date(startDateString);
     startDate.setHours(0, 0, 0, 0);
     
     if (startDate > today) {
@@ -115,6 +117,7 @@ const isValidDateString = (dateString) => {
     // Comprobar si la fecha resultante es válida y si sus componentes UTC coinciden con los de entrada.
     return !isNaN(date.getTime()) &&
            date.getUTCFullYear() === year &&
+           date.getUTCFullYear() === year &&
            date.getUTCMonth() === month - 1 && 
            date.getUTCDate() === day;
 };
@@ -124,8 +127,15 @@ const isValidDateString = (dateString) => {
 
 /**
  * Componente del Menú Desplegable de Configuración
+ * AHORA incluye el selector de fecha de inicio.
  */
-const SettingsDropdown = ({ exportToJson, importFromJson, closeDropdown }) => {
+const SettingsDropdown = ({ 
+    exportToJson, 
+    importFromJson, 
+    closeDropdown, 
+    startDateString, 
+    onStartDateChange 
+}) => {
     const fileInputRef = useRef(null);
     
     const handleImportClick = () => {
@@ -138,7 +148,7 @@ const SettingsDropdown = ({ exportToJson, importFromJson, closeDropdown }) => {
     };
 
     return (
-        <div className="absolute right-0 mt-2 w-48 bg-white rounded-lg shadow-xl ring-1 ring-black ring-opacity-5 z-20">
+        <div className="absolute right-0 mt-2 w-56 bg-white rounded-lg shadow-xl ring-1 ring-black ring-opacity-5 z-20">
             <div className="py-1">
                 <span className="block px-4 py-2 text-xs text-gray-400 font-semibold uppercase">Gestión de Datos</span>
                 
@@ -166,10 +176,20 @@ const SettingsDropdown = ({ exportToJson, importFromJson, closeDropdown }) => {
                     className="hidden"
                 />
 
+                {/* NUEVO: Selector de Fecha de Inicio */}
                 <div className="border-t border-gray-100 my-1"></div>
-                <span className="block px-4 py-2 text-xs text-gray-400 font-semibold uppercase">Futuras Opciones</span>
-                <div className="block px-4 py-2 text-sm text-gray-500">
-                    Cambiar Meta, Tema...
+                <span className="block px-4 py-2 text-xs text-gray-400 font-semibold uppercase">Configuración</span>
+                <div className="px-4 py-3">
+                    <label htmlFor="startDate" className="block text-sm font-medium text-gray-700 mb-1">
+                        Fecha de Inicio
+                    </label>
+                    <input
+                        type="date"
+                        id="startDate"
+                        value={startDateString}
+                        onChange={onStartDateChange}
+                        className="mt-1 w-full p-1.5 border border-gray-300 rounded-md text-sm shadow-sm focus:ring-indigo-500 focus:border-indigo-500"
+                    />
                 </div>
             </div>
         </div>
@@ -280,6 +300,9 @@ const App = () => {
     const [userId, setUserId] = useState(null);
     const [failedDays, setFailedDays] = useState({});
     
+    // NUEVO: Fecha de inicio como estado, con un default.
+    const [startDateString, setStartDateString] = useState('2025-10-06');
+
     // Estados de Carga
     const [isInitializing, setIsInitializing] = useState(true);
     const [isDataLoaded, setIsDataLoaded] = useState(false);
@@ -298,12 +321,16 @@ const App = () => {
     }, []);
     
     const todayKey = useMemo(() => formatDate(today), [today]);
-    const startDate = useMemo(() => new Date(START_DATE_STRING), []);
+    // Objeto Date de la fecha de inicio (dinámico)
+    const startDate = useMemo(() => new Date(startDateString), [startDateString]);
 
     const [currentViewDate, setCurrentViewDate] = useState(today);
 
-    // Score (Memoizado)
-    const { score, currentStreak } = useMemo(() => calculateScoreAndStreak(failedDays), [failedDays]);
+    // Score (Memoizado) - AHORA DEPENDE DE startDateString
+    const { score, currentStreak } = useMemo(
+        () => calculateScoreAndStreak(failedDays, startDateString), 
+        [failedDays, startDateString]
+    );
     
     // Dinero (Memoizado)
     const formattedMoney = useMemo(() => {
@@ -322,6 +349,7 @@ const App = () => {
     const monthName = useMemo(() => new Intl.DateTimeFormat('es-ES', { month: 'long', year: 'numeric' }).format(currentViewDate), [currentViewDate]);
 
     // Pre-calcula los datos del calendario para optimizar el renderizado
+    // AHORA DEPENDE DE startDate (dinámico)
     const calendarDays = useMemo(() => {
         const firstDayOfMonth = daysInMonth[0];
         const startOffset = (firstDayOfMonth.getDay() + 6) % 7; // Lunes=0, Domingo=6
@@ -341,7 +369,7 @@ const App = () => {
                 isFailed: !!failedDays[dateString],
                 isToday: dateString === todayKey,
                 isFuture: date > today,
-                isBeforeStart: date < startDate
+                isBeforeStart: date < startDate // Usa el estado dinámico
             };
         });
 
@@ -404,12 +432,22 @@ const App = () => {
     // eslint-disable-next-line react-hooks/exhaustive-deps
     }, []); 
 
+    // AHORA CARGA TAMBIÉN la fecha de inicio
     const loadGoalData = useCallback(async (firestore, currentUserId) => {
         setMessage("Conectando y cargando datos...");
         const userDaysDocRef = doc(firestore, `artifacts/${appId}/users/${currentUserId}/goal_data`, 'day_records');
         try {
             const docSnap = await getDoc(userDaysDocRef);
-            setFailedDays(docSnap.exists() ? (docSnap.data().failedDays || {}) : {});
+            if (docSnap.exists()) {
+                const data = docSnap.data();
+                setFailedDays(data.failedDays || {});
+                // Carga la fecha de inicio guardada, o usa el default si no existe
+                setStartDateString(data.startDateString || '2025-10-06');
+            } else {
+                // Si no existe el documento, usa los defaults
+                setFailedDays({});
+                setStartDateString('2025-10-06');
+            }
             setIsDataLoaded(true);
             setMessage("Datos cargados correctamente.");
         } catch (err) {
@@ -454,10 +492,31 @@ const App = () => {
         setNeedsSave(true);
     }, []); 
 
+    // NUEVO: Manejador para el cambio de fecha de inicio
+    const handleStartDateChange = useCallback((e) => {
+        const newDateStr = e.target.value;
+        
+        if (!isValidDateString(newDateStr)) {
+            setMessage("Formato de fecha no válido.");
+            return;
+        }
+        
+        const newDate = new Date(newDateStr);
+        if (newDate > today) {
+            setMessage("La fecha de inicio no puede ser en el futuro.");
+            return;
+        }
+
+        setStartDateString(newDateStr);
+        setNeedsSave(true);
+        setMessage("Fecha de inicio actualizada. Pulsa 'Guardar Cambios'.");
+    }, [today]);
+
     // ------------------------------------------------------------------
     // 3. FUNCIONES DE GUARDADO
     // ------------------------------------------------------------------
 
+    // AHORA GUARDA TAMBIÉN la fecha de inicio
     const handleSave = useCallback(async () => {
         if (!db || !userId || !isDataLoaded) {
             setMessage("Error: No se puede guardar. La base de datos no está lista.");
@@ -469,7 +528,13 @@ const App = () => {
         const userDaysDocRef = doc(db, `artifacts/${appId}/users/${userId}/goal_data`, 'day_records');
 
         try {
-            await setDoc(userDaysDocRef, { failedDays: failedDays }, { merge: true });
+            // Guarda AMBOS estados
+            const dataToSave = { 
+                failedDays: failedDays,
+                startDateString: startDateString 
+            };
+            await setDoc(userDaysDocRef, dataToSave, { merge: true });
+            
             setIsSaving(false);
             setNeedsSave(false);
             setMessage("¡Cambios guardados en la nube!");
@@ -478,7 +543,7 @@ const App = () => {
             setMessage(`Error al guardar: ${error.message}. Inténtalo de nuevo.`);
             setIsSaving(false);
         }
-    }, [db, userId, failedDays, isDataLoaded, appId]);
+    }, [db, userId, failedDays, startDateString, isDataLoaded, appId]);
 
 
     // ------------------------------------------------------------------
@@ -651,6 +716,9 @@ const App = () => {
                             exportToJson={exportToJson} 
                             importFromJson={importFromJson} 
                             closeDropdown={() => setShowSettings(false)}
+                            // Pasa el estado y el manejador al dropdown
+                            startDateString={startDateString}
+                            onStartDateChange={handleStartDateChange}
                         />
                     )}
                 </div>
