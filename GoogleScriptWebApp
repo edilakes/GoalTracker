@@ -2,12 +2,15 @@
  * ESTE CÓDIGO DEBE COPIARSE Y PEGARSE EN GOOGLE APPS SCRIPT
  * DE TU HOJA DE CÁLCULO Y LUEGO SER DESPLEGADO COMO UNA "WEB APP".
  *
- * Configuración de Despliegue:
+ * Configuración de Despliegue CRÍTICA:
  * 1. Clic en "Deploy" (Desplegar) > "New deployment" (Nuevo despliegue).
  * 2. Seleccionar tipo: "Web App".
  * 3. Ejecutar como: "Me" (Tú).
- * 4. ¿Quién tiene acceso?: "Anyone" (Cualquier usuario).
+ * 4. ¿Quién tiene acceso?: "Anyone" (Cualquier usuario). <--- ESTO ES CRÍTICO
  * 5. Clic en "Deploy" (Desplegar) y guarda la URL generada.
+ * * NOTA DE SOLUCIÓN DE ERRORES: Se ha eliminado la línea output.setHeader() 
+ * que causaba el error 'TypeError: output.setHeader is not a function', 
+ * ya que no es compatible con ContentService.
  */
 
 // Nombre de la hoja de cálculo donde se almacenarán los datos de los usuarios
@@ -16,13 +19,14 @@ const HEADERS = ['userId', 'startDateString', 'failedDatesArray'];
 
 /**
  * Función de utilidad para manejar la respuesta JSON.
- * @param {object} data - Los datos a devolver.
- * @param {number} code - Código de respuesta HTTP (por defecto 200).
- * @return {GoogleAppsScript.Content.TextOutput} Respuesta JSON.
  */
 function jsonResponse(data, code = 200) {
   const output = ContentService.createTextOutput(JSON.stringify(data));
   output.setMimeType(ContentService.MimeType.JSON);
+  
+  // Hemos quitado la línea output.setHeader('Access-Control-Allow-Origin', '*') que daba error.
+  // Google Apps Script maneja CORS automáticamente cuando el despliegue es 'Anyone'.
+  
   if (code !== 200) {
     output.setStatusCode(code);
   }
@@ -31,7 +35,6 @@ function jsonResponse(data, code = 200) {
 
 /**
  * Inicializa la hoja de cálculo y asegura que las cabeceras existan.
- * @return {GoogleAppsScript.Spreadsheet.Sheet} La hoja de trabajo de datos.
  */
 function getOrCreateSheet() {
   const ss = SpreadsheetApp.getActiveSpreadsheet();
@@ -39,7 +42,6 @@ function getOrCreateSheet() {
   
   if (!sheet) {
     sheet = ss.insertSheet(SHEET_NAME);
-    // Escribir las cabeceras en la primera fila
     sheet.getRange(1, 1, 1, HEADERS.length).setValues([HEADERS]);
   }
   return sheet;
@@ -47,18 +49,13 @@ function getOrCreateSheet() {
 
 /**
  * Busca una fila por userId y devuelve su índice y datos.
- * @param {string} userId El ID del usuario a buscar.
- * @param {GoogleAppsScript.Spreadsheet.Sheet} sheet La hoja de trabajo.
- * @return {{index: number, data: string[] | null}} El índice de la fila (base 1) y sus datos.
  */
 function findUserRow(userId, sheet) {
   const data = sheet.getDataRange().getValues();
   if (data.length <= 1) return { index: -1, data: null };
   
-  // Buscar a partir de la segunda fila (índice 1, ya que la primera son las cabeceras)
   for (let i = 1; i < data.length; i++) {
     if (data[i][0] === userId) {
-      // Devolver el índice de la fila en Sheets (base 1) y los datos
       return { index: i + 1, data: data[i] };
     }
   }
@@ -67,28 +64,31 @@ function findUserRow(userId, sheet) {
 
 /**
  * Maneja las peticiones GET (principalmente para cargar datos).
- * Se espera un parámetro 'action=load' y 'userId'.
  */
 function doGet(e) {
   const sheet = getOrCreateSheet();
   const params = e.parameter;
+  
+  // La respuesta CORS pre-flight solo es necesaria si la cabecera 'Access-Control-Allow-Origin'
+  // se incluye manualmente, lo cual ya no hacemos. 
+  // No obstante, mantenemos la lógica por si es útil en el futuro.
+  if (e.postData && e.postData.type === 'text/plain' && e.postData.contents === 'OPTIONS') {
+    return jsonResponse({ status: 'info', message: 'CORS Pre-flight OK' }, 200);
+  }
   
   if (params.action === 'load' && params.userId) {
     const userId = params.userId;
     const { index, data } = findUserRow(userId, sheet);
     
     if (index === -1 || !data) {
-      // Si el usuario no existe, devuelve una respuesta de éxito con datos por defecto.
-      // La app en el cliente interpretará esto como "datos nuevos/vacíos".
       return jsonResponse({
         status: 'success',
         message: 'User not found, returning defaults.',
-        startDateString: '2025-10-06', // Valor por defecto
-        failedDatesArray: '[]'         // Array vacío serializado
+        startDateString: '2025-10-06',
+        failedDatesArray: '[]'
       });
     }
 
-    // Devuelve los datos del usuario
     return jsonResponse({
       status: 'success',
       userId: data[0],
@@ -105,38 +105,42 @@ function doGet(e) {
 
 /**
  * Maneja las peticiones POST (principalmente para guardar datos).
- * Se espera 'action=save', 'userId', 'startDateString', y 'failedDatesArray'.
  */
 function doPost(e) {
-  const sheet = getOrCreateSheet();
-  const data = JSON.parse(e.postData.contents);
-  
-  if (data.action === 'save' && data.userId) {
-    const userId = data.userId;
-    const startDateString = data.startDateString || '2025-10-06';
-    const failedDatesArray = data.failedDatesArray || '[]'; // Array de fechas fallidas (JSON string)
+  try {
+    const sheet = getOrCreateSheet();
+    const data = JSON.parse(e.postData.contents);
     
-    const { index, data: existingData } = findUserRow(userId, sheet);
-    
-    const newRow = [
-      userId,
-      startDateString,
-      failedDatesArray
-    ];
-    
-    if (index === -1) {
-      // Nuevo usuario: añadir fila al final
-      sheet.appendRow(newRow);
-      return jsonResponse({ status: 'success', message: 'User data saved successfully (new).' });
-    } else {
-      // Usuario existente: actualizar la fila completa
-      sheet.getRange(index, 1, 1, newRow.length).setValues([newRow]);
-      return jsonResponse({ status: 'success', message: 'User data saved successfully (updated).' });
+    if (data.action === 'save' && data.userId) {
+      const userId = data.userId;
+      const startDateString = data.startDateString || '2025-10-06';
+      const failedDatesArray = data.failedDatesArray || '[]'; 
+      
+      const { index } = findUserRow(userId, sheet);
+      
+      const newRow = [
+        userId,
+        startDateString,
+        failedDatesArray
+      ];
+      
+      if (index === -1) {
+        sheet.appendRow(newRow);
+        return jsonResponse({ status: 'success', message: 'User data saved successfully (new).' });
+      } else {
+        sheet.getRange(index, 1, 1, newRow.length).setValues([newRow]);
+        return jsonResponse({ status: 'success', message: 'User data saved successfully (updated).' });
+      }
     }
+    
+    return jsonResponse({ 
+      status: 'error', 
+      message: 'Invalid POST request body or action.' 
+    }, 400);
+  } catch(err) {
+    return jsonResponse({ 
+      status: 'error', 
+      message: `Server-side error: ${err.toString()}` 
+    }, 500);
   }
-  
-  return jsonResponse({ 
-    status: 'error', 
-    message: 'Invalid POST request body or action.' 
-  }, 400);
 }
