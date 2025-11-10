@@ -3,704 +3,15 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Rastreador de Metas Diarias</title>
+    <title>Rastreador de Metas Diarias (Google Sheets)</title>
     <!-- Tailwind CSS CDN -->
     <script src="https://cdn.tailwindcss.com"></script>
-    <!-- Firebase SDK Imports -->
-    <script type="module">
-        import { initializeApp } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-app.js";
-        import { getAuth, signInAnonymously, signInWithCustomToken, onAuthStateChanged } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-auth.js";
-        import { getFirestore, doc, setDoc, getDoc } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-firestore.js";
-        import { setLogLevel } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-firestore.js";
-
-        // Establecer el nivel de registro de Firebase (Debug)
-        // setLogLevel('Debug'); // Descomentar para ver logs detallados de Firestore
-
-        // --- CONFIGURACIÓN Y GLOBALES DE CANVAS (MANTENIDOS AL PRINCIPIO) ---
-        const firebaseConfig = typeof __firebase_config !== 'undefined' ? JSON.parse(__firebase_config) : {};
-        const appId = typeof __app_id !== 'undefined' ? __app_id : 'default-app-id';
-        const initialAuthToken = typeof __initial_auth_token !== 'undefined' ? __initial_auth_token : null; 
-
-        // Variables globales (Reemplazando los estados de React)
-        let db = null;
-        let auth = null;
-        let userId = null;
-        let failedDays = {};
-        let startDateString = '2025-10-06'; // Fecha de inicio por defecto
-
-        // Estados de UI
-        let isInitializing = true;
-        let isDataLoaded = false;
-        let message = '';
-        let showSettings = false;
-        let isSaving = false;
-        let needsSave = false;
-
-        // ------------------------------------------------------------------
-        // --- UTILITIES (MOVIMIENTO: AHORA DEFINIDAS ANTES DE USARSE) ---
-        // ------------------------------------------------------------------
-
-        const formatDate = (date) => {
-            const year = date.getFullYear();
-            const month = (date.getMonth() + 1).toString().padStart(2, '0');
-            const day = date.getDate().toString().padStart(2, '0');
-            return `${year}-${month}-${day}`;
-        };
-
-        const getDaysInMonth = (date) => {
-            const year = date.getFullYear();
-            const month = date.getMonth();
-            const firstDay = new Date(year, month, 1);
-            const lastDay = new Date(year, month + 1, 0);
-            const days = [];
-            for (let d = new Date(firstDay); d <= lastDay; d.setDate(d.getDate() + 1)) {
-                days.push(new Date(d)); 
-            }
-            return days;
-        };
-
-        const getWeekdayNames = (locale = 'es-ES') => {
-            const format = new Intl.DateTimeFormat(locale, { weekday: 'short' });
-            const days = [];
-            // Empezar en el día que asegura que el 1 de Enero de 2023 es Domingo (día 7 en JS, 1 si Domingo=1)
-            // Aquí usamos 2 para obtener Lunes, luego Martes, etc.
-            // Esto asegura que el resultado sea [Lun, Mar, Mié, Jue, Vie, Sáb, Dom]
-            for (let i = 2; i <= 8; i++) { 
-                const date = new Date(2023, 0, i); 
-                days.push(format.format(date).charAt(0).toUpperCase() + format.format(date).slice(1));
-            }
-            return days.map(d => d.slice(0, 3)); 
-        };
-
-        const calculateScoreAndStreak = (failedDays, startDateString) => {
-            let totalScore = 0; 
-            let consecutiveDays = 0; 
-            let currentStreak = 0;
-
-            const todayCalc = new Date();
-            todayCalc.setHours(0, 0, 0, 0);
-
-            const startDate = new Date(startDateString);
-            startDate.setHours(0, 0, 0, 0);
-            
-            if (startDate > todayCalc) {
-                return { score: 0, currentStreak: 0 };
-            }
-
-            let currentDate = new Date(startDate);
-
-            while (currentDate <= todayCalc) {
-                const dateKey = formatDate(currentDate);
-                const isFailed = !!failedDays[dateKey];
-
-                if (isFailed) {
-                    consecutiveDays = 0;
-                } else {
-                    // Solo sumamos a la puntuación si el día anterior NO fue un fallo (o fue el día de inicio)
-                    // La lógica es que la puntuación es la suma de (racha_anterior) + 1
-                    totalScore += consecutiveDays;
-                    consecutiveDays += 1;
-                }
-
-                if (formatDate(currentDate) === todayKey) {
-                    currentStreak = consecutiveDays; 
-                }
-
-                currentDate.setDate(currentDate.getDate() + 1);
-            }
-
-            return { score: totalScore, currentStreak: currentStreak };
-        };
-
-        const isValidDateString = (dateString) => {
-            const regex = /^\d{4}-\d{2}-\d{2}$/;
-            if (!regex.test(dateString)) return false;
-
-            const parts = dateString.split('-');
-            const year = parseInt(parts[0], 10);
-            const month = parseInt(parts[1], 10); 
-            const day = parseInt(parts[2], 10);
-
-            const date = new Date(Date.UTC(year, month - 1, day));
-            
-            return !isNaN(date.getTime()) &&
-                   date.getUTCFullYear() === year &&
-                   date.getUTCMonth() === month - 1 && 
-                   date.getUTCDate() === day;
-        };
-
-        // ------------------------------------------------------------------
-        // --- FECHA Y CONSTANTES (AHORA QUE formatDate ESTÁ DISPONIBLE) ---
-        // ------------------------------------------------------------------
-        const today = new Date();
-        today.setHours(0, 0, 0, 0);
-        const todayKey = formatDate(today); 
-        let currentViewDate = new Date(today);
-        
-        // ------------------------------------------------------------------
-        // --- FUNCIONES DE PERSISTENCIA Y AUTENTICACIÓN ---
-        // ------------------------------------------------------------------
-
-        const loadGoalData = async (firestore, currentUserId) => {
-            updateMessage("Conectando y cargando datos...");
-            const userDaysDocRef = doc(firestore, `artifacts/${appId}/users/${currentUserId}/goal_data`, 'day_records');
-            try {
-                const docSnap = await getDoc(userDaysDocRef);
-                if (docSnap.exists()) {
-                    const data = docSnap.data();
-                    failedDays = data.failedDays || {};
-                    // Carga la fecha de inicio guardada
-                    startDateString = data.startDateString || '2025-10-06';
-                } else {
-                    failedDays = {};
-                    startDateString = '2025-10-06';
-                }
-                isDataLoaded = true;
-                updateMessage("Datos cargados correctamente.");
-            } catch (err) {
-                console.error("Error al cargar datos:", err);
-                updateMessage(`Error al cargar: ${err.message}.`);
-                isDataLoaded = true; 
-            }
-            renderApp();
-        };
-
-        const handleSave = async () => {
-            if (!db || !userId || !isDataLoaded) {
-                updateMessage("Error: No se puede guardar. La base de datos no está lista.");
-                return;
-            }
-
-            isSaving = true;
-            needsSave = false; // Asumir que el guardado se iniciará
-            updateMessage("Guardando cambios principales...");
-            renderApp();
-
-            const userDaysDocRef = doc(db, `artifacts/${appId}/users/${userId}/goal_data`, 'day_records');
-
-            try {
-                const dataToSave = { 
-                    failedDays: failedDays,
-                    startDateString: startDateString 
-                };
-                await setDoc(userDaysDocRef, dataToSave, { merge: true });
-                
-                isSaving = false;
-                needsSave = false;
-                updateMessage("¡Cambios guardados en la nube!");
-            } catch (error) {
-                console.error("Error al guardar en Firestore:", error);
-                updateMessage(`Error al guardar: ${error.message}. Inténtalo de nuevo.`);
-                needsSave = true; // Si falla, volver a marcar como no guardado
-                isSaving = false;
-            }
-            renderApp();
-        };
-
-        const initFirebase = async () => {
-            if (!firebaseConfig || !Object.keys(firebaseConfig).length) {
-                updateMessage("Error: Configuración de Firebase no disponible.");
-                isInitializing = false;
-                renderApp();
-                return;
-            }
-
-            try {
-                const app = initializeApp(firebaseConfig);
-                db = getFirestore(app);
-                auth = getAuth(app);
-                
-                const handleAuthAndLoad = async (user) => {
-                    let currentUserId = user ? user.uid : null;
-
-                    if (!currentUserId) {
-                        try {
-                            if (initialAuthToken) { 
-                                const userCredential = await signInWithCustomToken(auth, initialAuthToken);
-                                currentUserId = userCredential.user.uid;
-                            } else {
-                                const userCredential = await signInAnonymously(auth);
-                                currentUserId = userCredential.user.uid;
-                            }
-                        } catch (error) {
-                            console.error("Error en la autenticación:", error);
-                            updateMessage(`Error de Auth: ${error.message}`);
-                            isInitializing = false; 
-                            renderApp();
-                            return;
-                        }
-                    }
-                    
-                    userId = currentUserId;
-                    isInitializing = false; 
-                    
-                    if (db && userId) {
-                        await loadGoalData(db, userId);
-                    }
-                    renderApp(); 
-                };
-                
-                onAuthStateChanged(auth, handleAuthAndLoad);
-
-            } catch (e) {
-                console.error("Error al inicializar Firebase:", e);
-                updateMessage(`Error al inicializar: ${e.message}`);
-                isInitializing = false;
-                renderApp();
-            }
-        };
-
-        // ------------------------------------------------------------------
-        // --- FUNCIONES DE UI Y LÓGICA DE APLICACIÓN ---
-        // ------------------------------------------------------------------
-
-        const toggleDayStatus = (dateString) => {
-            if (!isDataLoaded || new Date(dateString) > today) return;
-
-            const newFailedDays = { ...failedDays };
-            if (!!newFailedDays[dateString]) {
-                delete newFailedDays[dateString];
-            } else {
-                newFailedDays[dateString] = true;
-            }
-            failedDays = newFailedDays;
-            needsSave = true;
-            renderApp();
-        };
-
-        const goToPrevMonth = () => {
-            const newDate = new Date(currentViewDate);
-            newDate.setMonth(newDate.getMonth() - 1);
-            currentViewDate = newDate;
-            renderApp();
-        };
-
-        const goToNextMonth = () => {
-            const newDate = new Date(currentViewDate);
-            newDate.setMonth(newDate.getMonth() + 1);
-            currentViewDate = newDate;
-            renderApp();
-        };
-        
-        const updateMessage = (text) => {
-            message = text;
-            renderApp();
-        };
-        
-        const toggleSettings = () => {
-            showSettings = !showSettings;
-            renderApp();
-        };
-        
-        const handleStartDateChange = (e) => {
-            const newDateStr = e.target.value;
-            
-            if (!isValidDateString(newDateStr)) {
-                updateMessage("Formato de fecha no válido.");
-                e.target.value = startDateString;
-                return;
-            }
-            
-            const newDate = new Date(newDateStr);
-            if (newDate > today) {
-                updateMessage("La fecha de inicio no puede ser en el futuro.");
-                e.target.value = startDateString;
-                return;
-            }
-
-            startDateString = newDateStr;
-            needsSave = true;
-            updateMessage("Fecha de inicio actualizada. Pulsa 'Guardar Cambios'.");
-            renderApp();
-        };
-
-
-        // ------------------------------------------------------------------
-        // --- FUNCIONES DE IMPORTACIÓN/EXPORTACIÓN JSON ---
-        // ------------------------------------------------------------------
-
-        const exportToJson = () => {
-            const failedDatesArray = Object.keys(failedDays).sort();
-            const jsonContent = JSON.stringify(failedDatesArray, null, 2);
-            const blob = new Blob([jsonContent], { type: 'application/json;charset=utf-8;' });
-            const url = URL.createObjectURL(blob);
-            const a = document.createElement('a');
-            a.href = url;
-            a.download = `GoalTracker_FailedDays_${formatDate(new Date())}.json`; 
-            document.body.appendChild(a);
-            a.click();
-            document.body.removeChild(a);
-            URL.revokeObjectURL(url);
-            updateMessage("¡Días fallidos exportados a JSON!");
-        };
-        
-        const importFromJson = (event) => {
-            const file = event.target.files[0];
-            if (!file) return;
-
-            updateMessage("Importando archivo JSON...");
-            const reader = new FileReader();
-            
-            reader.onload = (e) => {
-                const content = e.target.result;
-                try {
-                    const importedArray = JSON.parse(content);
-                    if (!Array.isArray(importedArray)) {
-                        updateMessage("Error: El archivo JSON debe contener un Array de fechas.");
-                        return;
-                    }
-
-                    const importedFailedDays = {};
-                    let invalidCount = 0;
-                    let futureCount = 0;
-                    let totalDatesProcessed = 0;
-                    
-                    importedArray.forEach(item => {
-                        totalDatesProcessed++;
-                        const dateString = String(item).trim();
-
-                        if (isValidDateString(dateString)) {
-                            if (dateString <= todayKey) { 
-                                importedFailedDays[dateString] = true;
-                            } else {
-                                futureCount++;
-                            }
-                        } else {
-                            invalidCount++;
-                        }
-                    });
-
-                    failedDays = importedFailedDays;
-                    needsSave = true;
-                    
-                    let resultMessage = `Importación completada. Se cargaron ${Object.keys(importedFailedDays).length} días fallidos.`;
-                    const ignoredDates = invalidCount + futureCount;
-                    if (ignoredDates > 0) {
-                        resultMessage += ` (${ignoredDates} fechas ignoradas: ${invalidCount} formato, ${futureCount} futuras.)`;
-                    } else {
-                         resultMessage += ` (Se procesaron ${totalDatesProcessed} fechas.)`;
-                    }
-                    updateMessage(resultMessage + " ¡Recuerda Guardar Cambios!");
-                } catch (error) {
-                    updateMessage(`Error al procesar el archivo JSON: ${error.message}`);
-                    console.error("Error al parsear JSON:", error);
-                }
-                event.target.value = null; 
-                renderApp();
-            };
-            reader.onerror = () => {
-                updateMessage("Error al leer el archivo.");
-                event.target.value = null; 
-                renderApp();
-            };
-            reader.readAsText(file); 
-        };
-
-        // ------------------------------------------------------------------
-        // --- FUNCIONES DE RENDERIZADO (Reemplazo de React JSX) ---
-        // ------------------------------------------------------------------
-
-        const getScoreAndFormattedMoney = () => {
-            const { score, currentStreak } = calculateScoreAndStreak(failedDays, startDateString);
-            const euros = score / 100;
-            const formattedMoney = new Intl.NumberFormat('es-ES', { 
-                style: 'currency', 
-                currency: 'EUR',
-                minimumFractionDigits: 2,
-                maximumFractionDigits: 2,
-            }).format(euros);
-            return { formattedMoney, currentStreak };
-        };
-
-        // Genera el HTML del dropdown de configuración
-        const renderSettingsDropdown = () => {
-            if (!showSettings || !isDataLoaded) return '';
-
-            return `
-                <div id="settings-dropdown" class="absolute right-0 mt-2 w-56 bg-white rounded-lg shadow-xl ring-1 ring-black ring-opacity-5 z-30">
-                    <div class="py-1">
-                        <span class="block px-4 py-2 text-xs text-gray-400 font-semibold uppercase">Gestión de Datos</span>
-                        
-                        <button
-                            onclick="window.exportToJson(); window.toggleSettings();"
-                            class="flex items-center w-full px-4 py-2 text-sm text-gray-700 hover:bg-gray-100 transition-colors"
-                        >
-                            <svg class="w-4 h-4 mr-2 text-green-500" fill="none" stroke="currentColor" viewBox="0 0 24 24" xmlns="http://www.w3.org/2000/svg"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M15 11l-3 3-3-3m4 8v-6a4 4 0 00-8 0v6m12 0h2a2 2 0 002-2v-3a2 2 0 00-2-2H9"></path></svg>
-                            Exportar a JSON
-                        </button>
-
-                        <button
-                            id="import-button"
-                            class="flex items-center w-full px-4 py-2 text-sm text-gray-700 hover:bg-gray-100 transition-colors"
-                        >
-                            <svg class="w-4 h-4 mr-2 text-blue-500" fill="none" stroke="currentColor" viewBox="0 0 24 24" xmlns="http://www.w3.org/2000/svg"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M3 7v10a2 2 0 002 2h14a2 2 0 002-2V9a2 2 0 00-2-2h-6l-2-2H5a2 2 0 00-2 2z"></path></svg>
-                            Importar JSON
-                        </button>
-                        
-                        <input type="file" id="file-input" accept=".json" class="hidden" onchange="window.importFromJson(event); window.toggleSettings();"/>
-
-                        <div class="border-t border-gray-100 my-1"></div>
-                        <span class="block px-4 py-2 text-xs text-gray-400 font-semibold uppercase">Configuración</span>
-                        <div class="px-4 py-3">
-                            <label for="startDate" class="block text-sm font-medium text-gray-700 mb-1">
-                                Fecha de Inicio
-                            </label>
-                            <input
-                                type="date"
-                                id="startDate"
-                                value="${startDateString}"
-                                onchange="window.handleStartDateChange(event)"
-                                class="mt-1 w-full p-1.5 border border-gray-300 rounded-md text-sm shadow-sm focus:ring-indigo-500 focus:border-indigo-500"
-                            />
-                        </div>
-                    </div>
-                </div>
-            `;
-        };
-
-        // Genera el HTML del calendario
-        const renderCalendar = () => {
-            const daysInMonth = getDaysInMonth(currentViewDate);
-            const weekdayNames = getWeekdayNames('es-ES');
-            const monthName = new Intl.DateTimeFormat('es-ES', { month: 'long', year: 'numeric' }).format(currentViewDate);
-            const startDate = new Date(startDateString);
-
-            // Pre-calcula los días del calendario
-            const firstDayOfMonth = daysInMonth[0];
-            const startOffset = (firstDayOfMonth.getDay() + 6) % 7; 
-
-            let calendarDaysHtml = '';
-            
-            // Días de relleno
-            for (let i = 0; i < startOffset; i++) {
-                // Modificado: usamos day-cell sin contenido para el offset, para que se ajuste a la cuadrícula
-                calendarDaysHtml += `<div class="day-cell"></div>`;
-            }
-
-            // Días del mes
-            daysInMonth.forEach((date) => {
-                const dateString = formatDate(date);
-                const isFailed = !!failedDays[dateString];
-                const isToday = dateString === todayKey;
-                const isFuture = date > today;
-                const isBeforeStart = date < startDate;
-
-                let contentClass = "";
-                let circleClass = "bg-gray-100 text-gray-600";
-                let statusText = "";
-                let isClickable = true;
-
-                if (isFuture) {
-                    contentClass = "bg-gray-50 text-gray-400 cursor-default";
-                    circleClass = "bg-transparent text-gray-300 border border-gray-200";
-                    isClickable = false;
-                } else if (isBeforeStart) {
-                    contentClass = "bg-gray-200 text-gray-400 cursor-default opacity-50";
-                    circleClass = "bg-gray-300 text-gray-500";
-                    isClickable = false;
-                    statusText = "Inicio";
-                } else if (isFailed) {
-                    contentClass = "bg-red-100 hover:bg-red-200 text-red-800 ring-2 ring-red-400";
-                    circleClass = "bg-red-500 text-white font-bold";
-                    statusText = "Derrota!";
-                } else {
-                    contentClass = "neutral-state text-gray-800";
-                    circleClass = "bg-gray-100 text-gray-600 font-medium";
-                    statusText = "";
-                }
-                
-                if (isToday && !isFuture && !isBeforeStart) {
-                    contentClass += " border-2 border-indigo-500 shadow-md";
-                }
-
-                const finalClickable = isClickable && isDataLoaded;
-                contentClass = finalClickable ? contentClass : `${contentClass} opacity-60 cursor-not-allowed`;
-                
-                const clickHandler = finalClickable ? `onclick="window.toggleDayStatus('${dateString}')"` : '';
-                const activeEffect = finalClickable ? 'active:scale-95' : '';
-
-                // Modificado: day-cell ya no tiene clases de flex/width, solo clases de cuadrícula.
-                calendarDaysHtml += `
-                    <div class="day-cell">
-                        <div
-                            class="day-content ${contentClass} ${activeEffect}"
-                            ${clickHandler}
-                            role="button"
-                            aria-label="Marcar día ${date.getDate()}"
-                        >
-                            <div class="w-6 h-6 rounded-full text-center text-sm ${circleClass} flex items-center justify-center mb-1">
-                                ${date.getDate()}
-                            </div>
-                            <span class="text-xs font-semibold">${statusText}</span>
-                            ${isToday ? '<span class="text-xs font-bold text-indigo-700 absolute bottom-1">HOY</span>' : ''}
-                        </div>
-                    </div>
-                `;
-            });
-
-            // Ensambla el HTML del calendario
-            const isCalendarDisabled = !isDataLoaded;
-            const calendarHtml = `
-                <div class="flex justify-between items-center mb-4">
-                    <button 
-                        onclick="window.goToPrevMonth()"
-                        class="p-2 rounded-full text-indigo-600 nav-button ${isCalendarDisabled ? 'opacity-50' : 'hover:bg-indigo-100'}"
-                        ${isCalendarDisabled ? 'disabled' : ''}
-                    >
-                        <svg class="w-6 h-6" fill="none" stroke="currentColor" viewBox="0 0 24 24" xmlns="http://www.w3.org/2000/svg"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M15 19l-7-7 7-7"></path></svg>
-                    </button>
-                    <h2 class="text-xl font-semibold text-gray-800 capitalize text-center">${monthName}</h2>
-                    <button 
-                        onclick="window.goToNextMonth()"
-                        class="p-2 rounded-full text-indigo-600 nav-button ${isCalendarDisabled ? 'opacity-50' : 'hover:bg-indigo-100'}"
-                        ${isCalendarDisabled ? 'disabled' : ''}
-                    >
-                        <svg class="w-6 h-6" fill="none" stroke="currentColor" viewBox="0 0 24 24" xmlns="http://www.w3.org/2000/svg"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 5l7 7-7 7"></path></svg>
-                    </button>
-                </div>
-
-                <div class="grid grid-cols-7 text-center text-sm font-bold text-gray-600 mb-1">
-                    ${weekdayNames.map(day => `<div class="py-2">${day}</div>`).join('')}
-                </div>
-
-                <!-- MODIFICADO: Usamos una cuadrícula real para los días del calendario -->
-                <div class="grid grid-cols-7 gap-1">
-                    ${calendarDaysHtml}
-                </div>
-
-                ${!isDataLoaded ? `
-                    <div class="absolute inset-0 bg-white bg-opacity-70 flex items-center justify-center z-10 rounded-xl">
-                        <div class="flex flex-col items-center">
-                            <div class="save-spinner !border-t-indigo-600 !w-8 !h-8 mb-2"></div>
-                            <p class="text-indigo-600 font-semibold">Cargando datos de la nube...</p>
-                        </div>
-                    </div>
-                ` : ''}
-            `;
-
-            return calendarHtml;
-        };
-
-        const renderApp = () => {
-            const appRoot = document.getElementById('app-root');
-            if (!appRoot) return;
-
-            if (isInitializing) {
-                appRoot.innerHTML = `
-                    <div class="flex justify-center items-center h-screen bg-gray-50">
-                        <p class="text-xl text-indigo-600 font-semibold">Iniciando aplicación...</p>
-                    </div>
-                `;
-                return;
-            }
-
-            const { formattedMoney, currentStreak } = getScoreAndFormattedMoney();
-            const isCalendarDisabled = !isDataLoaded;
-
-            // Renderizado principal (similar al JSX)
-            appRoot.innerHTML = `
-                <div class="min-h-screen bg-gray-50 flex flex-col items-center p-4">
-                    
-                    <!-- Panel de Puntuación y Guardado Principal -->
-                    <div class="w-full max-w-md bg-white p-6 mb-4 rounded-xl shadow-lg border-t-4 border-indigo-500 relative">
-                        
-                        <!-- Botón de Configuración y Dropdown -->
-                        <div class="absolute top-4 right-4 z-30">
-                            <button 
-                                onclick="window.toggleSettings()"
-                                class="p-2 rounded-full text-indigo-600 hover:bg-indigo-100 transition-colors"
-                                aria-expanded="${showSettings}"
-                                ${isCalendarDisabled ? 'disabled' : ''}
-                            >
-                                <svg class="w-6 h-6" fill="none" stroke="currentColor" viewBox="0 0 24 24" xmlns="http://www.w3.org/2000/svg"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M10.325 4.317c.426-1.756 2.924-1.756 3.35 0a1.724 1.724 0 002.573 1.066c1.543-.94 3.31.826 2.37 2.37a1.724 1.724 0 001.065 2.572c1.756.426 1.756 2.924 0 3.35a1.724 1.724 0 00-1.066 2.573c.94 1.543-.826 3.31-2.37 2.37a1.724 1.724 0 00-2.572 1.065c-.426 1.756-2.924 1.756-3.35 0a1.724 1.724 0 00-2.573-1.066c-1.543.94-3.31-.826-2.37-2.37a1.724 1.724 0 00-1.065-2.572c-1.756-.426-1.756-2.924 0-3.35a1.724 1.724 0 001.066-2.573c-.94-1.543.826-3.31 2.37-2.37a1.724 1.724 0 002.572-1.065z"></path><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M15 12a3 3 0 11-6 0 3 3 0 016 0z"></path></svg>
-                            </button>
-                            ${renderSettingsDropdown()}
-                        </div>
-
-                        <h1 class="text-3xl font-extrabold text-indigo-700 mb-2 text-center">Rastreador de Metas</h1>
-                        <p class="text-sm text-gray-500 text-center mb-4">ID de Usuario: <span class="font-mono text-xs">${userId || 'Sin autenticar'}</span></p>
-
-                        <!-- Score Card -->
-                        <div class="flex justify-around items-center space-x-4 mb-6">
-                            <div class="flex flex-col items-center p-3 bg-indigo-50 rounded-lg w-1/2 shadow-sm">
-                                <span class="text-xs font-medium text-gray-500">DINERO ACUMULADO</span>
-                                <span class="text-4xl font-extrabold text-indigo-600 mt-1">${isDataLoaded ? formattedMoney : '...'}</span>
-                            </div>
-                            <div class="flex flex-col items-center p-3 bg-green-50 rounded-lg w-1/2 shadow-sm">
-                                <span class="text-xs font-medium text-gray-500">RACHA ACTUAL</span>
-                                <span class="text-4xl font-extrabold text-green-600 mt-1">${isDataLoaded ? currentStreak : '...'}</span>
-                            </div>
-                        </div>
-                        
-                        <!-- BOTÓN DE GUARDAR PRINCIPAL -->
-                        <div>
-                            <button
-                                onclick="window.handleSave()"
-                                ${isSaving || isCalendarDisabled ? 'disabled' : ''}
-                                class="w-full flex justify-center items-center px-4 py-3 rounded-lg text-white font-bold text-lg transition-all
-                                    ${(isSaving || isCalendarDisabled) ? 'bg-gray-400 cursor-not-allowed' : 'bg-indigo-600 hover:bg-indigo-700'}
-                                    ${needsSave && !isSaving && isDataLoaded ? 'pulse-save-button' : ''}
-                                "
-                            >
-                                ${isSaving ? `
-                                    <span class="save-spinner mr-2"></span>
-                                    Guardando...
-                                ` : (isCalendarDisabled ? 'Cargando Datos...' : (needsSave ? 'Guardar Cambios' : 'Datos Sincronizados'))}
-                            </button>
-                            ${needsSave && !isSaving && isDataLoaded ? `
-                                <p class="text-center text-sm text-yellow-600 font-medium mt-2">¡Tienes cambios sin guardar!</p>
-                            ` : ''}
-                        </div>
-                    </div>
-                    
-                    <!-- Calendario -->
-                    <div class="w-full max-w-md bg-white p-4 mb-4 rounded-xl shadow-lg transition-opacity duration-300 relative ${isCalendarDisabled ? 'opacity-50 pointer-events-none' : 'opacity-100'}">
-                        ${renderCalendar()}
-                    </div>
-
-                    <!-- Mensaje de estado/error -->
-                    ${message ? `
-                        <div class="mt-4 p-3 w-full max-w-md rounded-lg ${message.startsWith('Error') ? 'bg-red-100 text-red-800' : 'bg-blue-100 text-blue-800'} text-sm text-center shadow">
-                            ${message}
-                        </div>
-                    ` : ''}
-                </div>
-            `;
-            
-            // Adjuntar evento al botón de importar (porque se crea dinámicamente)
-            const importButton = document.getElementById('import-button');
-            if (importButton) {
-                importButton.onclick = () => {
-                    document.getElementById('file-input').click();
-                };
-            }
-        };
-
-        // ------------------------------------------------------------------
-        // --- EXPOSICIÓN GLOBAL DE FUNCIONES (SOLUCIÓN AL ReferenceError) ---
-        // ------------------------------------------------------------------
-        
-        window.goToPrevMonth = goToPrevMonth;
-        window.goToNextMonth = goToNextMonth;
-        window.toggleDayStatus = toggleDayStatus;
-        window.handleSave = handleSave;
-        window.toggleSettings = toggleSettings;
-        window.exportToJson = exportToJson;
-        window.importFromJson = importFromJson;
-        window.handleStartDateChange = handleStartDateChange;
-
-        // Inicia la aplicación al cargar el script
-        window.onload = initFirebase;
-        
-    </script>
-    
     <style>
         @import url('https://fonts.googleapis.com/css2?family=Inter:wght@400;600;700;800&display=swap');
         body { font-family: 'Inter', sans-serif; }
         
         /* Contenedor de la celda: se ajustará automáticamente en la cuadrícula */
         .day-cell {
-            /* Eliminamos propiedades de flex/width que causaban problemas */
             position: relative;
             padding-top: 100%; /* Mantenemos la proporción 1:1 */
         }
@@ -764,5 +75,733 @@
     <div id="app-root">
         <!-- El contenido se inyectará aquí por el script de JS -->
     </div>
+
+    <script type="module">
+        
+        // --- CONFIGURACIÓN Y GLOBALES ---
+        // Generación de un ID de usuario anónimo (para la hoja de cálculo)
+        const userId = typeof crypto !== 'undefined' && crypto.randomUUID ? crypto.randomUUID() : 'anonymous-user';
+        
+        // La URL de tu Google Apps Script desplegado como Web App
+        let SHEETS_WEB_APP_URL = localStorage.getItem('sheetsWebAppUrl') || ''; 
+
+        // Variables de estado
+        let failedDays = {};
+        let startDateString = '2025-10-06'; // Fecha de inicio por defecto
+        let isInitializing = false;
+        let isDataLoaded = false;
+        let message = '';
+        let showSettings = !SHEETS_WEB_APP_URL; // Mostrar ajustes si la URL no está configurada
+        let isSaving = false;
+        let needsSave = false;
+        let isSavingUrl = false;
+        
+        // --- FECHA Y CONSTANTES ---
+        const formatDate = (date) => {
+            const year = date.getFullYear();
+            const month = (date.getMonth() + 1).toString().padStart(2, '0');
+            const day = date.getDate().toString().padStart(2, '0');
+            return `${year}-${month}-${day}`;
+        };
+        const today = new Date();
+        today.setHours(0, 0, 0, 0);
+        const todayKey = formatDate(today); 
+        let currentViewDate = new Date(today);
+        
+        // --- UTILITIES ---
+
+        const getDaysInMonth = (date) => {
+            const year = date.getFullYear();
+            const month = date.getMonth();
+            const firstDay = new Date(year, month, 1);
+            const lastDay = new Date(year, month + 1, 0);
+            const days = [];
+            for (let d = new Date(firstDay); d <= lastDay; d.setDate(d.getDate() + 1)) {
+                days.push(new Date(d)); 
+            }
+            return days;
+        };
+
+        const getWeekdayNames = (locale = 'es-ES') => {
+            const format = new Intl.DateTimeFormat(locale, { weekday: 'short' });
+            const days = [];
+            // Empezar en Lunes para obtener [Lun, Mar, Mié, Jue, Vie, Sáb, Dom]
+            for (let i = 2; i <= 8; i++) { 
+                const date = new Date(2023, 0, i); 
+                days.push(format.format(date).charAt(0).toUpperCase() + format.format(date).slice(1));
+            }
+            return days.map(d => d.slice(0, 3)); 
+        };
+
+        const calculateScoreAndStreak = (failedDays, startDateString) => {
+            let totalScore = 0; 
+            let consecutiveDays = 0; 
+            let currentStreak = 0;
+
+            const todayCalc = new Date();
+            todayCalc.setHours(0, 0, 0, 0);
+
+            const startDate = new Date(startDateString);
+            startDate.setHours(0, 0, 0, 0);
+            
+            if (startDate > todayCalc) {
+                return { score: 0, currentStreak: 0 };
+            }
+
+            let currentDate = new Date(startDate);
+
+            while (currentDate <= todayCalc) {
+                const dateKey = formatDate(currentDate);
+                const isFailed = !!failedDays[dateKey];
+
+                if (isFailed) {
+                    consecutiveDays = 0;
+                } else {
+                    totalScore += consecutiveDays;
+                    consecutiveDays += 1;
+                }
+
+                if (formatDate(currentDate) === todayKey) {
+                    currentStreak = consecutiveDays; 
+                }
+
+                currentDate.setDate(currentDate.getDate() + 1);
+            }
+
+            return { score: totalScore, currentStreak: currentStreak };
+        };
+
+        const isValidDateString = (dateString) => {
+            const regex = /^\d{4}-\d{2}-\d{2}$/;
+            if (!regex.test(dateString)) return false;
+
+            const parts = dateString.split('-');
+            const year = parseInt(parts[0], 10);
+            const month = parseInt(parts[1], 10); 
+            const day = parseInt(parts[2], 10);
+
+            const date = new Date(Date.UTC(year, month - 1, day));
+            
+            return !isNaN(date.getTime()) &&
+                   date.getUTCFullYear() === year &&
+                   date.getUTCMonth() === month - 1 && 
+                   date.getUTCDate() === day;
+        };
+        
+        const updateMessage = (text) => {
+            message = text;
+            renderApp();
+        };
+
+        // ------------------------------------------------------------------
+        // --- FUNCIONES DE PERSISTENCIA (GOOGLE SHEETS WEB APP) ---
+        // ------------------------------------------------------------------
+
+        const loadGoalData = async () => {
+            if (!SHEETS_WEB_APP_URL) {
+                updateMessage("Introduce la URL de tu Web App de Google Sheets en Configuración.");
+                isDataLoaded = true; // Permite la interacción con la UI de configuración
+                return;
+            }
+            
+            isDataLoaded = false;
+            updateMessage("Conectando y cargando datos desde Google Sheets...");
+            renderApp();
+
+            try {
+                const url = `${SHEETS_WEB_APP_URL}?action=load&userId=${userId}`;
+                const response = await fetch(url, { method: 'GET' });
+                
+                if (!response.ok) {
+                    throw new Error(`HTTP error! status: ${response.status}`);
+                }
+                
+                const data = await response.json();
+
+                if (data.status === 'success') {
+                    // El Apps Script devuelve failedDays como un array de strings (JSON stringified)
+                    const failedDatesArray = data.failedDatesArray ? JSON.parse(data.failedDatesArray) : [];
+                    
+                    failedDays = {};
+                    failedDatesArray.forEach(date => { failedDays[date] = true; });
+                    startDateString = data.startDateString || '2025-10-06';
+
+                    isDataLoaded = true;
+                    updateMessage("Datos cargados correctamente de Sheets.");
+                } else {
+                    // Si el usuario es nuevo, el Apps Script devuelve un error 404 o una respuesta 'error'
+                    failedDays = {};
+                    startDateString = '2025-10-06';
+                    isDataLoaded = true;
+                    updateMessage("Datos iniciales listos. ¡Tu primera meta será guardada!");
+                }
+            } catch (err) {
+                console.error("Error al cargar datos de Sheets:", err);
+                updateMessage(`Error al cargar datos de Sheets: ${err.message}. Verifica la URL.`);
+                isDataLoaded = true;
+            }
+            renderApp();
+        };
+
+        const handleSave = async () => {
+            if (!SHEETS_WEB_APP_URL || !isDataLoaded) {
+                updateMessage("Error: Configura la URL de Sheets y espera que los datos carguen.");
+                return;
+            }
+
+            isSaving = true;
+            needsSave = false;
+            updateMessage("Guardando cambios en Google Sheets...");
+            renderApp();
+
+            // Convierte el objeto failedDays en un array de fechas para guardarlo de forma concisa
+            const failedDatesArray = Object.keys(failedDays).filter(date => !!failedDays[date]);
+            
+            try {
+                const dataToSave = { 
+                    action: 'save',
+                    userId: userId,
+                    failedDatesArray: JSON.stringify(failedDatesArray), // JSON stringify para pasar el array
+                    startDateString: startDateString 
+                };
+                
+                const response = await fetch(SHEETS_WEB_APP_URL, {
+                    method: 'POST',
+                    contentType: 'application/json',
+                    body: JSON.stringify(dataToSave)
+                });
+                
+                if (!response.ok) {
+                    throw new Error(`HTTP error! status: ${response.status}`);
+                }
+                
+                const result = await response.json();
+
+                if (result.status === 'success') {
+                    isSaving = false;
+                    needsSave = false;
+                    updateMessage("¡Cambios guardados en Google Sheets!");
+                } else {
+                    throw new Error(result.message || 'Error desconocido al guardar.');
+                }
+
+            } catch (error) {
+                console.error("Error al guardar en Sheets:", error);
+                updateMessage(`Error al guardar: ${error.message}. Inténtalo de nuevo.`);
+                needsSave = true; 
+                isSaving = false;
+            }
+            renderApp();
+        };
+
+        const saveWebAppUrl = () => {
+            const input = document.getElementById('sheets-url-input');
+            const newUrl = input.value.trim();
+
+            if (!newUrl.startsWith('https://script.google.com/macros/s/')) {
+                updateMessage("La URL de la Web App no parece válida. Debe empezar con 'https://script.google.com/macros/s/'");
+                return;
+            }
+
+            SHEETS_WEB_APP_URL = newUrl;
+            localStorage.setItem('sheetsWebAppUrl', newUrl);
+            toggleSettings(); // Cerrar ajustes
+            initApp(); // Recargar datos con la nueva URL
+        };
+
+        const clearWebAppUrl = () => {
+            SHEETS_WEB_APP_URL = '';
+            localStorage.removeItem('sheetsWebAppUrl');
+            document.getElementById('sheets-url-input').value = '';
+            showSettings = true;
+            isDataLoaded = true;
+            updateMessage("URL borrada. Introduce una nueva URL de Web App para continuar.");
+            renderApp();
+        };
+
+
+        // ------------------------------------------------------------------
+        // --- LÓGICA DE APLICACIÓN ---
+        // ------------------------------------------------------------------
+
+        const toggleDayStatus = (dateString) => {
+            if (!isDataLoaded || new Date(dateString) > today) return;
+
+            const newFailedDays = { ...failedDays };
+            if (!!newFailedDays[dateString]) {
+                delete newFailedDays[dateString];
+            } else {
+                newFailedDays[dateString] = true;
+            }
+            failedDays = newFailedDays;
+            needsSave = true;
+            renderApp();
+        };
+
+        const goToPrevMonth = () => {
+            const newDate = new Date(currentViewDate);
+            newDate.setMonth(newDate.getMonth() - 1);
+            currentViewDate = newDate;
+            renderApp();
+        };
+
+        const goToNextMonth = () => {
+            const newDate = new Date(currentViewDate);
+            newDate.setMonth(newDate.getMonth() + 1);
+            currentViewDate = newDate;
+            renderApp();
+        };
+        
+        const toggleSettings = () => {
+            showSettings = !showSettings;
+            renderApp();
+        };
+        
+        const handleStartDateChange = (e) => {
+            const newDateStr = e.target.value;
+            
+            if (!isValidDateString(newDateStr)) {
+                updateMessage("Formato de fecha no válido.");
+                e.target.value = startDateString;
+                return;
+            }
+            
+            const newDate = new Date(newDateStr);
+            if (newDate > today) {
+                updateMessage("La fecha de inicio no puede ser en el futuro.");
+                e.target.value = startDateString;
+                return;
+            }
+
+            startDateString = newDateStr;
+            needsSave = true;
+            updateMessage("Fecha de inicio actualizada. Pulsa 'Guardar Cambios'.");
+            renderApp();
+        };
+
+
+        // ------------------------------------------------------------------
+        // --- FUNCIONES DE IMPORTACIÓN/EXPORTACIÓN JSON ---
+        // ------------------------------------------------------------------
+
+        const exportToJson = () => {
+            const failedDatesArray = Object.keys(failedDays).sort();
+            const jsonContent = JSON.stringify({ failedDates: failedDatesArray, startDate: startDateString }, null, 2);
+            const blob = new Blob([jsonContent], { type: 'application/json;charset=utf-8;' });
+            const url = URL.createObjectURL(blob);
+            const a = document.createElement('a');
+            a.href = url;
+            a.download = `GoalTracker_Data_${formatDate(new Date())}.json`; 
+            document.body.appendChild(a);
+            a.click();
+            document.body.removeChild(a);
+            URL.revokeObjectURL(url);
+            updateMessage("Datos exportados a JSON!");
+        };
+        
+        const importFromJson = (event) => {
+            const file = event.target.files[0];
+            if (!file) return;
+
+            updateMessage("Importando archivo JSON...");
+            const reader = new FileReader();
+            
+            reader.onload = (e) => {
+                const content = e.target.result;
+                try {
+                    const importedData = JSON.parse(content);
+                    
+                    const importedArray = importedData.failedDates || importedData; // Acepta el formato antiguo (solo array) o el nuevo
+                    const newStartDate = importedData.startDate || startDateString;
+
+                    if (!Array.isArray(importedArray) || typeof newStartDate !== 'string') {
+                        updateMessage("Error: El archivo JSON no tiene el formato esperado.");
+                        return;
+                    }
+
+                    const importedFailedDays = {};
+                    let invalidCount = 0;
+                    let futureCount = 0;
+                    
+                    importedArray.forEach(item => {
+                        const dateString = String(item).trim();
+                        if (isValidDateString(dateString)) {
+                            if (dateString <= todayKey) { 
+                                importedFailedDays[dateString] = true;
+                            } else {
+                                futureCount++;
+                            }
+                        } else {
+                            invalidCount++;
+                        }
+                    });
+
+                    // Validar la fecha de inicio antes de aplicarla
+                    if (isValidDateString(newStartDate) && new Date(newStartDate) <= today) {
+                        startDateString = newStartDate;
+                    } else if (!isValidDateString(newStartDate)) {
+                        updateMessage(`Advertencia: Fecha de inicio "${newStartDate}" no válida, se mantiene la actual.`);
+                    }
+
+                    failedDays = importedFailedDays;
+                    needsSave = true;
+                    
+                    let resultMessage = `Importación completada. Se cargaron ${Object.keys(importedFailedDays).length} días fallidos.`;
+                    const ignoredDates = invalidCount + futureCount;
+                    if (ignoredDates > 0) {
+                        resultMessage += ` (${ignoredDates} fechas ignoradas: ${invalidCount} formato, ${futureCount} futuras.)`;
+                    }
+                    updateMessage(resultMessage + " ¡Recuerda Guardar Cambios!");
+                } catch (error) {
+                    updateMessage(`Error al procesar el archivo JSON: ${error.message}`);
+                    console.error("Error al parsear JSON:", error);
+                }
+                event.target.value = null; 
+                renderApp();
+            };
+            reader.onerror = () => {
+                updateMessage("Error al leer el archivo.");
+                event.target.value = null; 
+                renderApp();
+            };
+            reader.readAsText(file); 
+        };
+
+        // ------------------------------------------------------------------
+        // --- FUNCIONES DE RENDERIZADO ---
+        // ------------------------------------------------------------------
+
+        const getScoreAndFormattedMoney = () => {
+            const { score, currentStreak } = calculateScoreAndStreak(failedDays, startDateString);
+            const euros = score / 100;
+            const formattedMoney = new Intl.NumberFormat('es-ES', { 
+                style: 'currency', 
+                currency: 'EUR',
+                minimumFractionDigits: 2,
+                maximumFractionDigits: 2,
+            }).format(euros);
+            return { formattedMoney, currentStreak };
+        };
+
+        // Genera el HTML del dropdown de configuración
+        const renderSettingsDropdown = () => {
+            if (!showSettings) return '';
+            
+            const isUrlSet = !!SHEETS_WEB_APP_URL;
+
+            return `
+                <div id="settings-dropdown" class="absolute right-0 mt-2 w-72 bg-white rounded-xl shadow-2xl ring-1 ring-black ring-opacity-5 z-30">
+                    <div class="p-4">
+                        <span class="block text-xs text-gray-400 font-semibold uppercase mb-2">Configuración de Google Sheets Web App</span>
+                        
+                        <div class="mb-3">
+                            <label for="sheets-url-input" class="block text-sm font-medium text-gray-700 mb-1">
+                                URL de la Web App (Apps Script)
+                            </label>
+                            <input
+                                type="url"
+                                id="sheets-url-input"
+                                placeholder="Pega aquí tu URL de Apps Script"
+                                value="${SHEETS_WEB_APP_URL}"
+                                class="mt-1 w-full p-2 border border-gray-300 rounded-md text-sm shadow-sm focus:ring-indigo-500 focus:border-indigo-500 disabled:bg-gray-50"
+                                ${isUrlSet ? 'disabled' : ''}
+                            />
+                        </div>
+                        
+                        ${!isUrlSet ? `
+                            <button
+                                onclick="window.saveWebAppUrl()"
+                                class="w-full mb-3 py-2 px-4 border border-transparent rounded-md shadow-sm text-sm font-medium text-white bg-indigo-600 hover:bg-indigo-700 focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-indigo-500 transition-colors"
+                            >
+                                Guardar URL y Cargar Datos
+                            </button>
+                        ` : `
+                            <p class="text-xs text-green-600 mb-3 font-medium">URL configurada. Usuario ID: <span class="font-mono">${userId.substring(0, 8)}...</span></p>
+                            <button
+                                onclick="window.clearWebAppUrl()"
+                                class="w-full mb-3 py-2 px-4 border border-transparent rounded-md shadow-sm text-sm font-medium text-red-600 bg-red-100 hover:bg-red-200 focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-red-500 transition-colors"
+                            >
+                                Borrar URL
+                            </button>
+                        `}
+                        
+                        <div class="border-t border-gray-100 my-3"></div>
+                        <span class="block text-xs text-gray-400 font-semibold uppercase mb-2">Gestión y Configuración Local</span>
+
+                        <div class="px-0 py-1">
+                            <label for="startDate" class="block text-sm font-medium text-gray-700 mb-1">
+                                Fecha de Inicio
+                            </label>
+                            <input
+                                type="date"
+                                id="startDate"
+                                value="${startDateString}"
+                                onchange="window.handleStartDateChange(event)"
+                                class="mt-1 w-full p-1.5 border border-gray-300 rounded-md text-sm shadow-sm focus:ring-indigo-500 focus:border-indigo-500"
+                            />
+                        </div>
+                        
+                        <div class="flex space-x-2 mt-4">
+                            <button
+                                onclick="window.exportToJson(); window.toggleSettings();"
+                                class="flex-1 flex items-center justify-center px-3 py-2 text-sm text-gray-700 border border-gray-300 rounded-md hover:bg-gray-100 transition-colors"
+                            >
+                                <svg class="w-4 h-4 mr-1" fill="none" stroke="currentColor" viewBox="0 0 24 24" xmlns="http://www.w3.org/2000/svg"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M15 11l-3 3-3-3m4 8v-6a4 4 0 00-8 0v6m12 0h2a2 2 0 002-2v-3a2 2 0 00-2-2H9"></path></svg>
+                                Exportar
+                            </button>
+
+                            <label
+                                for="file-input"
+                                class="flex-1 flex items-center justify-center px-3 py-2 text-sm text-gray-700 border border-gray-300 rounded-md hover:bg-gray-100 transition-colors cursor-pointer"
+                            >
+                                <svg class="w-4 h-4 mr-1" fill="none" stroke="currentColor" viewBox="0 0 24 24" xmlns="http://www.w3.org/2000/svg"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M3 7v10a2 2 0 002 2h14a2 2 0 002-2V9a2 2 0 00-2-2h-6l-2-2H5a2 2 0 00-2 2z"></path></svg>
+                                Importar
+                            </label>
+                            <input type="file" id="file-input" accept=".json" class="hidden" onchange="window.importFromJson(event); window.toggleSettings();"/>
+                        </div>
+                    </div>
+                </div>
+            `;
+        };
+
+        // Genera el HTML del calendario
+        const renderCalendar = () => {
+            const daysInMonth = getDaysInMonth(currentViewDate);
+            const weekdayNames = getWeekdayNames('es-ES');
+            const monthName = new Intl.DateTimeFormat('es-ES', { month: 'long', year: 'numeric' }).format(currentViewDate);
+            const startDate = new Date(startDateString);
+
+            // Pre-calcula los días del calendario
+            const firstDayOfMonth = daysInMonth[0];
+            const startOffset = (firstDayOfMonth.getDay() + 6) % 7; 
+
+            let calendarDaysHtml = '';
+            
+            // Días de relleno
+            for (let i = 0; i < startOffset; i++) {
+                calendarDaysHtml += `<div class="day-cell"></div>`;
+            }
+
+            // Días del mes
+            daysInMonth.forEach((date) => {
+                const dateString = formatDate(date);
+                const isFailed = !!failedDays[dateString];
+                const isToday = dateString === todayKey;
+                const isFuture = date > today;
+                const isBeforeStart = date < startDate;
+
+                let contentClass = "";
+                let circleClass = "bg-gray-100 text-gray-600";
+                let statusText = "";
+                let isClickable = true;
+
+                if (isFuture) {
+                    contentClass = "bg-gray-50 text-gray-400 cursor-default";
+                    circleClass = "bg-transparent text-gray-300 border border-gray-200";
+                    isClickable = false;
+                } else if (isBeforeStart) {
+                    contentClass = "bg-gray-200 text-gray-400 cursor-default opacity-50";
+                    circleClass = "bg-gray-300 text-gray-500";
+                    isClickable = false;
+                    statusText = "Inicio";
+                } else if (isFailed) {
+                    contentClass = "bg-red-100 hover:bg-red-200 text-red-800 ring-2 ring-red-400";
+                    circleClass = "bg-red-500 text-white font-bold";
+                    statusText = "Derrota!";
+                } else {
+                    contentClass = "neutral-state text-gray-800";
+                    circleClass = "bg-gray-100 text-gray-600 font-medium";
+                    statusText = "";
+                }
+                
+                if (isToday && !isFuture && !isBeforeStart) {
+                    contentClass += " border-2 border-indigo-500 shadow-md";
+                }
+
+                const finalClickable = isClickable && isDataLoaded && !!SHEETS_WEB_APP_URL;
+                contentClass = finalClickable ? contentClass : `${contentClass} opacity-60 cursor-not-allowed`;
+                
+                const clickHandler = finalClickable ? `onclick="window.toggleDayStatus('${dateString}')"` : '';
+                const activeEffect = finalClickable ? 'active:scale-95' : '';
+
+                calendarDaysHtml += `
+                    <div class="day-cell">
+                        <div
+                            class="day-content ${contentClass} ${activeEffect}"
+                            ${clickHandler}
+                            role="button"
+                            aria-label="Marcar día ${date.getDate()}"
+                        >
+                            <div class="w-6 h-6 rounded-full text-center text-sm ${circleClass} flex items-center justify-center mb-1">
+                                ${date.getDate()}
+                            </div>
+                            <span class="text-xs font-semibold">${statusText}</span>
+                            ${isToday ? '<span class="text-xs font-bold text-indigo-700 absolute bottom-1">HOY</span>' : ''}
+                        </div>
+                    </div>
+                `;
+            });
+
+            // Ensambla el HTML del calendario
+            const isCalendarDisabled = !isDataLoaded || !SHEETS_WEB_APP_URL;
+            const loadingOverlay = !isDataLoaded && SHEETS_WEB_APP_URL ? `
+                <div class="absolute inset-0 bg-white bg-opacity-70 flex items-center justify-center z-10 rounded-xl">
+                    <div class="flex flex-col items-center">
+                        <div class="save-spinner !border-t-indigo-600 !w-8 !h-8 mb-2"></div>
+                        <p class="text-indigo-600 font-semibold">Cargando datos de Sheets...</p>
+                    </div>
+                </div>
+            ` : '';
+
+            const calendarHtml = `
+                <div class="flex justify-between items-center mb-4">
+                    <button 
+                        onclick="window.goToPrevMonth()"
+                        class="p-2 rounded-full text-indigo-600 nav-button ${isCalendarDisabled ? 'opacity-50' : 'hover:bg-indigo-100'}"
+                        ${isCalendarDisabled ? 'disabled' : ''}
+                    >
+                        <svg class="w-6 h-6" fill="none" stroke="currentColor" viewBox="0 0 24 24" xmlns="http://www.w3.org/2000/svg"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M15 19l-7-7 7-7"></path></svg>
+                    </button>
+                    <h2 class="text-xl font-semibold text-gray-800 capitalize text-center">${monthName}</h2>
+                    <button 
+                        onclick="window.goToNextMonth()"
+                        class="p-2 rounded-full text-indigo-600 nav-button ${isCalendarDisabled ? 'opacity-50' : 'hover:bg-indigo-100'}"
+                        ${isCalendarDisabled ? 'disabled' : ''}
+                    >
+                        <svg class="w-6 h-6" fill="none" stroke="currentColor" viewBox="0 0 24 24" xmlns="http://www.w3.org/2000/svg"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 5l7 7-7 7"></path></svg>
+                    </button>
+                </div>
+
+                <div class="grid grid-cols-7 text-center text-sm font-bold text-gray-600 mb-1">
+                    ${weekdayNames.map(day => `<div class="py-2">${day}</div>`).join('')}
+                </div>
+
+                <!-- MODIFICADO: Usamos una cuadrícula real para los días del calendario -->
+                <div class="grid grid-cols-7 gap-1">
+                    ${calendarDaysHtml}
+                </div>
+
+                ${loadingOverlay}
+            `;
+
+            return calendarHtml;
+        };
+
+        const renderApp = () => {
+            const appRoot = document.getElementById('app-root');
+            if (!appRoot) return;
+
+            const { formattedMoney, currentStreak } = getScoreAndFormattedMoney();
+            const isCalendarDisabled = !isDataLoaded || !SHEETS_WEB_APP_URL;
+
+            // Renderizado principal (similar al JSX)
+            appRoot.innerHTML = `
+                <div class="min-h-screen bg-gray-50 flex flex-col items-center p-4">
+                    
+                    <!-- Panel de Puntuación y Guardado Principal -->
+                    <div class="w-full max-w-md bg-white p-6 mb-4 rounded-xl shadow-lg border-t-4 border-indigo-500 relative">
+                        
+                        <!-- Botón de Configuración y Dropdown -->
+                        <div class="absolute top-4 right-4 z-30">
+                            <button 
+                                onclick="window.toggleSettings()"
+                                class="p-2 rounded-full text-indigo-600 hover:bg-indigo-100 transition-colors"
+                                aria-expanded="${showSettings}"
+                            >
+                                <svg class="w-6 h-6" fill="none" stroke="currentColor" viewBox="0 0 24 24" xmlns="http://www.w3.org/2000/svg"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M10.325 4.317c.426-1.756 2.924-1.756 3.35 0a1.724 1.724 0 002.573 1.066c1.543-.94 3.31.826 2.37 2.37a1.724 1.724 0 001.065 2.572c1.756.426 1.756 2.924 0 3.35a1.724 1.724 0 00-1.066 2.573c.94 1.543-.826 3.31-2.37 2.37a1.724 1.724 0 00-2.572 1.065c-.426 1.756-2.924 1.756-3.35 0a1.724 1.724 0 00-2.573-1.066c-1.543.94-3.31-.826-2.37-2.37a1.724 1.724 0 00-1.065-2.572c-1.756-.426-1.756-2.924 0-3.35a1.724 1.724 0 001.066-2.573c-.94-1.543.826-3.31 2.37-2.37a1.724 1.724 0 002.572-1.065z"></path><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M15 12a3 3 0 11-6 0 3 3 0 016 0z"></path></svg>
+                            </button>
+                            ${renderSettingsDropdown()}
+                        </div>
+
+                        <h1 class="text-3xl font-extrabold text-indigo-700 mb-2 text-center">Rastreador de Metas</h1>
+                        <p class="text-sm text-gray-500 text-center mb-4">Usuario: <span class="font-mono text-xs">${userId.substring(0, 16)}...</span></p>
+
+                        <!-- Score Card -->
+                        <div class="flex justify-around items-center space-x-4 mb-6">
+                            <div class="flex flex-col items-center p-3 bg-indigo-50 rounded-lg w-1/2 shadow-sm">
+                                <span class="text-xs font-medium text-gray-500">DINERO ACUMULADO</span>
+                                <span class="text-4xl font-extrabold text-indigo-600 mt-1">${isDataLoaded ? formattedMoney : '...'}</span>
+                            </div>
+                            <div class="flex flex-col items-center p-3 bg-green-50 rounded-lg w-1/2 shadow-sm">
+                                <span class="text-xs font-medium text-gray-500">RACHA ACTUAL</span>
+                                <span class="text-4xl font-extrabold text-green-600 mt-1">${isDataLoaded ? currentStreak : '...'}</span>
+                            </div>
+                        </div>
+                        
+                        <!-- BOTÓN DE GUARDAR PRINCIPAL -->
+                        <div>
+                            <button
+                                onclick="window.handleSave()"
+                                ${isSaving || isCalendarDisabled ? 'disabled' : ''}
+                                class="w-full flex justify-center items-center px-4 py-3 rounded-lg text-white font-bold text-lg transition-all
+                                    ${(isSaving || isCalendarDisabled) ? 'bg-gray-400 cursor-not-allowed' : 'bg-indigo-600 hover:bg-indigo-700'}
+                                    ${needsSave && !isSaving && isDataLoaded ? 'pulse-save-button' : ''}
+                                "
+                            >
+                                ${isSaving ? `
+                                    <span class="save-spinner mr-2"></span>
+                                    Guardando...
+                                ` : (isCalendarDisabled ? (SHEETS_WEB_APP_URL ? 'Cargando Datos...' : 'Configura la URL de Sheets') : (needsSave ? 'Guardar Cambios' : 'Datos Sincronizados'))}
+                            </button>
+                            ${needsSave && !isSaving && isDataLoaded ? `
+                                <p class="text-center text-sm text-yellow-600 font-medium mt-2">¡Tienes cambios sin guardar!</p>
+                            ` : ''}
+                        </div>
+                    </div>
+                    
+                    <!-- Calendario -->
+                    <div class="w-full max-w-md bg-white p-4 mb-4 rounded-xl shadow-lg transition-opacity duration-300 relative ${isCalendarDisabled ? 'opacity-50 pointer-events-none' : 'opacity-100'}">
+                        ${renderCalendar()}
+                    </div>
+
+                    <!-- Mensaje de estado/error -->
+                    ${message ? `
+                        <div class="mt-4 p-3 w-full max-w-md rounded-lg ${message.startsWith('Error') || message.startsWith('Advertencia') ? 'bg-red-100 text-red-800' : 'bg-blue-100 text-blue-800'} text-sm text-center shadow">
+                            ${message}
+                        </div>
+                    ` : ''}
+                </div>
+            `;
+            
+            // Adjuntar evento al label del botón de importar (se hace una vez para evitar múltiples listeners)
+            const fileInput = document.getElementById('file-input');
+            if (fileInput && !fileInput.hasAttribute('data-listeners-attached')) {
+                fileInput.addEventListener('change', (event) => {
+                    window.importFromJson(event); 
+                    window.toggleSettings();
+                });
+                fileInput.setAttribute('data-listeners-attached', 'true');
+            }
+        };
+
+        // ------------------------------------------------------------------
+        // --- EXPOSICIÓN GLOBAL Y ARRANQUE ---
+        // ------------------------------------------------------------------
+        
+        window.goToPrevMonth = goToPrevMonth;
+        window.goToNextMonth = goToNextMonth;
+        window.toggleDayStatus = toggleDayStatus;
+        window.handleSave = handleSave;
+        window.toggleSettings = toggleSettings;
+        window.exportToJson = exportToJson;
+        window.importFromJson = importFromJson;
+        window.handleStartDateChange = handleStartDateChange;
+        window.saveWebAppUrl = saveWebAppUrl;
+        window.clearWebAppUrl = clearWebAppUrl;
+
+        const initApp = () => {
+            if (SHEETS_WEB_APP_URL) {
+                loadGoalData();
+            } else {
+                // Si la URL no está configurada, cargamos la UI de configuración
+                isDataLoaded = true;
+                updateMessage("¡Bienvenido! Configura tu URL de Google Apps Script para empezar.");
+            }
+        };
+
+        // Inicia la aplicación al cargar el script
+        window.onload = initApp;
+        
+    </script>
 </body>
 </html>
