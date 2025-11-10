@@ -48,7 +48,8 @@ Para que la aplicación funcione, es crucial configurar y desplegar correctament
 Una vez que tengas la URL de la Web App:
 
 1. Abre el archivo GoalTracker\_Sheets.html en tu navegador (o en el entorno donde se esté ejecutando).  
-2. Al inicio, o haciendo clic en el icono de **"Configuración" (engranaje)**, aparecerá el menú.  
+2. Al inicio, o haciendo clic en el icono de **"Configuración" (engranaje)**, aparecerá el menú. 
+https://script.google.com/macros/s/AKfycbwR_Em8RzDR5dE3UJXtFeqAwXM-zxQEjYrbhG-5tsf0-kXKwEOBWCfUsyJN5TGSHDWucw/exec
 3. Pega la **Web App URL** que obtuviste en el paso anterior.  
 4. Haz clic en **"Guardar URL y Cargar Datos"**.
 
